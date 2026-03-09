@@ -5,6 +5,7 @@
 #include <vector> //벡터사용을 위한 헤더파일
 #include <regex> //정규표현식을 위한 헤더파일
 #include <fstream> //파일에 입출력을 위한 헤더파일
+#include <set> //set 쓰기위한 헤더파일
 #include <ctime> //시간
 #include <iomanip> //시간을 이쁘게쓰기
 
@@ -264,6 +265,12 @@ int main()
     const int ChooseAgain = 2;
     std::vector <Menu> menu_list;
     LoadMenu("Menu.csv", menu_list);
+    std::set<std::string> category_set;
+    for(const auto& major_menu : menu_list)
+    {
+        category_set.insert(major_menu.category); // 카테고리 안의 메뉴가 몇개있든, 하나로 취급. 임시로 major_menu 이름을 붙임.
+    }
+    std::vector<std::string> category_list(category_set.begin(), category_set.end());
     std::string input_check_needed; // 모든 입력은 체크하기위해 inputcheckneeded 문자열로 받음.
     int logincheck = ChooseAgain;
     int whom;
@@ -315,17 +322,45 @@ int main()
             std::cout << "1 혹은 2의 숫자로 입력해주세요.\r\n";
             continue;
         }
-        input_check_needed = stoi(input_check_needed);
-        if (input_check_needed == 1)
+        std::cout << "------------------------\r\n-----환영합니다 000입니다.\r\n------------------------------";
+        int major_menu_picker = 0;
+        const int menu_meal = 1;
+        const int menu_soup = 2;
+        const int menu_dish = 3;
+        const int menu_drink = 4;
+        const int menu_finish = 5;
+        while (major_menu_picker != menu_finish)
         {
-            std::cout << "현금 결제를 선택하셨습니다.\r\n결제하실 금액은 " << total_price <<"원 입니다.\r\n";
+            std::cout<< "식사는 1번 국은 2번 반찬은 3번 주류는 4번 메뉴선정이 끝나셨다면 5번을 눌러주세요 : ";
+            std:getline(std::cin, input_check_needed);
+            if (!is_numeric(input_check_needed))
+            {
+                std::cout << "\r\n숫자로만 입력해주세요!\r\n";
+            }
+            if (!IsNumericOverall(input_check_needed))
+            {
+                std::cout<<"1~5까지의 숫자로만 입력해주세요! \r\n";
+            }
+            major_menu_picker = stoi(input_check_needed) - 1;
+            switch (major_menu_picker)
+            {
+            case 1:
+                for (int i = 0; i < menu_meal.size(); i++)
+                {
+                    std::cout << i+1 <<"." << menu_name
+                }
+                
+                break;
             
-
+            default:
+                break;
+            }
+            
+            
         }
         
+
+        
     }
-    
-    
-    
     return 0;
 }
