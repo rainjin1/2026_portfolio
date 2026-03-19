@@ -1,6 +1,8 @@
+#자동차의 후방, 측면 등 다른 물체와의 거리를 판별해서 경고 led를 켜는 프로그램
+
 from pop import Psd, delay, Leds
 psd = Psd()
-led_controller = [num for num in range(8)]
+led_controller = [num for num in range(8)] #0~7번까지 총 8개의 led를 컨트롤하기에 리스트 설정.
 led = Leds()
 while True:
     value = psd.readAverage() #이동평균필터
