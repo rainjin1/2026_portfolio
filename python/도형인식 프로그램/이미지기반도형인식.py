@@ -50,7 +50,7 @@ for cnt in contours:
     if M["m00"] == 0: continue
     # m10 : x좌표값들의 합
     # m01 : y좌표값들의 합
-    # m00 : 전체 점의 갯수. *꼭짓점뿐만이 아닌, 도형을 구성하는 모든 좌표
+    # m00 : 전체 점의 갯수. *꼭짓점뿐만이 아닌, 도형을 구성하는 모든 좌표의 합산. 면적 이라고 보면 됨.
     cx = int(M["m10"] / M["m00"])
     cy = int(M["m01"] / M["m00"])
 
@@ -80,7 +80,10 @@ for cnt in contours:
     elif len(approx) == 4:
         shape = "Rectangle"
     elif len(approx) > 5:
-        # 원 판별 (원본의 면적 비교 방식 유지)
+        # 원 판별 (꼭짓점의 갯수가 5개 이상일때) 샘플이미지1번에서는 8각형까지 원으로 인식해줌.
+        # circle_area = cv2.minEnclosingCircle 은 단어 그대로, 가장 작은 외접원을 의미함.
+        # 해당 도형을 감싸는 가장 작은 외접원과 면적이 비슷한지를 판별함. 아래에서 오차범위가 20%아래일시:
+        # 찌그러져서 원의 성질을 잃지 않았다로 판별 = 원으로 인정해줌.
         (x_c, y_c), radius = cv2.minEnclosingCircle(cnt)
         circle_area = np.pi * radius * radius
         if circle_area > 0 and abs(area - circle_area) / circle_area < 0.2:
