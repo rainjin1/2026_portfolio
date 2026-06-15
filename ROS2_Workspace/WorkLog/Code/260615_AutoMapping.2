@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+import rclpy
+from rclpy.node import Node
+from geometry_msgs.msg import Twist
+from sensor_msgs.msg import LaserScan
+import math
+
+class RightHandWallFollower(Node):
+    def __init__(self):
+        super().__init__('right_hand_wall_follower')
+
+        self.cmd_vel_pub = self.create_publisher(Twist, 'cmd_vel', 10)
+        lidar_qos = rclpy.qos.QoSProfile(
+            reliability=rclpy.qos.ReliabilityPolicy.BEST_EFFORT,
+            history=rclpy.qos.HistoryPolicy.KEEP_LAST,
+            depth=5
+        )
+        self.scan_sub = self.create_subscription(LaserScan, '/scan', self.scan_callback, lidar_qos)
+
+        self.timer = self.create_timer(0.1, self.control_loop)
+
+        self.scan_msg = None
+        
+        # 초기 상태를 벽 찾기(무조건 전진)로 설정
+        self.state = "FIND_WALL"
+
+        # --- 파라미터 (기존 변수 유지 및 최적화) ---
+        self.DESIRED_WALL_DIST = 0.25
+        self.FRONT_CRITICAL = 0.28
+        self.RIGHT_OPEN_DIST = 0.55
+        self.RIGHT_REJOIN_DIST = 0.40
+        self.MAX_LINEAR = 0.10
+        self.MAX_ANGULAR = 0.45
+        
+        # 신규 추가된 제어 상수 (가상 목표점 가중치 및 P 게인)
+        self.ALPHA = 0.35
+        self.P_GAIN = -2.0
+
+        self.get_logger().info("Right-hand wall follower (Pipeline Version) started.")
+
+    def scan_callback(self, msg):
+        self.scan_msg = msg
+
+    def angle_to_index(self, angle_deg):
+        """각도를 LaserScan 인덱스로 변환"""
+        if not self.scan_msg:
+            return 0
+        angle_rad = math.radians(angle_deg)
+        idx = int((angle_rad - self.scan_msg.angle_min) / self.scan_msg.angle_increment)
+        idx = max(0, min(idx, len(self.scan_msg.ranges)-1))
+        return idx
+
+    def get_region_distance(self, start_deg, end_deg):
+        """각도 범위 최소 거리 반환 (안전 및 모퉁이 판별을 위해 min 사용)"""
+        if not self.scan_msg:
+            return 3.5
+        indices = []
+        if start_deg <= end_deg:
+            indices = [self.angle_to_index(a) for a in range(start_deg, end_deg+1)]
+        else:
+            indices = [self.angle_to_index(a) for a in range(start_deg, 360)] + \
+                      [self.angle_to_index(a) for a in range(0, end_deg+1)]
+        
+        valid = [self.scan_msg.ranges[i] for i in indices if 0.05 < self.scan_msg.ranges[i] < 3.5]
+        return min(valid) if valid else 3.5
+
+    def control_loop(self):
+        if not self.scan_msg:
+            return
+
+        twist = Twist()
+
+        # --- 1단계: 센서 데이터 수집 ---
+        front_dist = self.get_region_distance(350, 10)
+        right_front_dist = self.get_region_distance(300, 340)
+        right_side_dist = self.get_region_distance(250, 290)
+
+        # --- 2단계: 우선순위 기반 상태(State) 결정 루프 ---
+        
+        # [우선순위 1] 벽이 아예 없는 공백 상태인 경우 -> 무조건 전진
+        if right_side_dist >= 3.5 and right_front_dist >= 3.5:
+            self.state = "FIND_WALL"
+            
+        # [우선순위 2] 정면은 막혔으나 우전방이 트인 경우 -> 탈출구 진입 (우회전)
+        elif front_dist < self.FRONT_CRITICAL and right_front_dist > self.RIGHT_OPEN_DIST:
+            self.state = "TURN_RIGHT"
+            
+        # [우선순위 3] 정면이 막히고 우전방도 막힌 경우 -> 구석탱이 회피 (좌회전)
+        elif front_dist < self.FRONT_CRITICAL:
+            self.state = "TURN_LEFT"
+            
+        # [우선순위 4] 일반 주행 중 우측 벽이 소실된 경우 -> 바깥 모퉁이 (우회전)
+        elif right_side_dist > self.RIGHT_OPEN_DIST:
+            self.state = "TURN_RIGHT"
+            
+        # [우선순위 5] 그 외 벽이 안정적으로 감지되는 경우 -> 벽 따라가기
+        else:
+            # 기존 TURN_LEFT나 TURN_RIGHT 상태였다가 복귀하는 히스테리시스 조건 방어벽
+            if self.state == "TURN_LEFT" and front_dist < 0.45:
+                pass # 아직 완전히 전방이 열리기 전까지는 좌회전 유지
+            elif self.state == "TURN_RIGHT" and right_side_dist > self.RIGHT_REJOIN_DIST:
+                pass # 우측 벽과 다시 합류하기 전까지는 우회전 유지
+            else:
+                self.state = "FOLLOW_WALL"
+
+        # --- 3단계: 상태별 속도 명령 매핑 ---
+        if self.state == "FIND_WALL":
+            # 벽을 찾을 때까지 최대 속도로 무조건 직진
+            twist.linear.x = self.MAX_LINEAR
+            twist.angular.z = 0.0
+
+        elif self.state == "TURN_LEFT":
+            # 제자리 안전 고속 좌회전
+            twist.linear.x = 0.0
+            twist.angular.z = self.MAX_ANGULAR
+
+        elif self.state == "TURN_RIGHT":
+            # 탈출구 및 모퉁이를 감아 들어가는 선속도 유지형 우회전
+            twist.linear.x = 0.05
+            twist.angular.z = -self.MAX_ANGULAR
+
+        elif self.state == "FOLLOW_WALL":
+            # 가상 목표점(Look-Ahead) 기반 단일 오차 P 제어
+            predicted_wall_dist = (self.ALPHA * right_front_dist) + ((1.0 - self.ALPHA) * right_side_dist)
+            distance_error = predicted_wall_dist - self.DESIRED_WALL_DIST
+
+            # 조향각 계산
+            angular = distance_error * self.P_GAIN
+            angular = max(min(angular, self.MAX_ANGULAR), -self.MAX_ANGULAR)
+
+            # 급회전 시 감속 제어
+            linear = 0.04 if abs(angular) > 0.25 else self.MAX_LINEAR
+
+            twist.linear.x = linear
+            twist.angular.z = angular
+
+        # --- 4단계: 명령 퍼블리시 ---
+        self.cmd_vel_pub.publish(twist)
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = RightHandWallFollower()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stop = Twist()
+        node.cmd_vel_pub.publish(stop)
+        node.destroy_node()
+        rclpy.shutdown()
+
+if __name__ == '__main__':
+    main()
