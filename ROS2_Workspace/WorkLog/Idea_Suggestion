@@ -32,3 +32,7 @@ ex)- 왼쪽 벽 거리 : 1.2m 오른쪽 벽 거리 : 0.6m (가운데 공간 ok)
 평행주차 - 벽 옆 공간 찾기 -> 비스듬히 진입 -> 후진 회전
 직각주차 - 정면 공간으로 직진 , 중앙 정렬, 후진으로 밀어넣기
 추가 - 소리 벽에 가까워질 때쯤 경고 신호 삐삐~울림 , 가상 리모콘에서 주차 버튼을 누르면 주차 모드 활성화 후 주차 공간 탐색
+
+4. 자동 발렛 파킹
+https://mpsystem.co/?campaignid=19019799021&adgroupid=143406163826&keyword=%EB%AC%B4%EC%9D%B8%EC%A3%BC%EC%B0%A8%EC%8B%9C%EC%8A%A4%ED%85%9C&device=c&gad_source=2&gad_campaignid=19019799021&gclid=EAIaIQobChMIs8LX2tqIlQMVNOkWBR0bAA21EAAYASAAEgJ_1_D_BwE
+링크에 나온 발레파킹 로봇을 터틀봇을 이용해 비슷하게 구현.
