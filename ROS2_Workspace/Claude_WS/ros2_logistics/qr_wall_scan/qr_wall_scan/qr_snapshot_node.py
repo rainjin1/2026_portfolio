@@ -52,6 +52,23 @@ from qr_wall_scan.wall_coverage_planner import WallCoveragePlanner, ScanPose
 from qr_wall_scan.map_coord_utils import MapCoordSystem
 
 
+def _load_precomputed_poses(yaml_path: str) -> list[ScanPose]:
+    """config/scan_poses_0622.yaml 에서 ScanPose 목록 로드."""
+    with open(yaml_path, 'r', encoding='utf-8') as f:
+        doc = yaml.safe_load(f)
+    poses = []
+    for p in doc['poses']:
+        poses.append(ScanPose(
+            world_x       = float(p['x']),
+            world_y       = float(p['y']),
+            yaw_rad       = float(p['yaw_rad']),
+            yaw_deg       = float(p['yaw_deg']),
+            standoff_m    = float(p['standoff_m']),
+            angle_to_wall = int(p['angle_to_wall']),
+        ))
+    return poses
+
+
 # ── 카메라 파라미터 (라즈베리파이 카메라 v2 / 640×480) ───────────────────────
 IMG_WIDTH      = 640
 IMG_HEIGHT     = 480
@@ -76,12 +93,15 @@ class QRSnapshotNode(Node):
         self.declare_parameter('standoff_max',   0.80)
         self.declare_parameter('standoff_min',   0.30)
         self.declare_parameter('capture_timeout', 3.0)   # 사진 캡처 대기 최대 시간(초)
+        # 사전 계산된 촬영 위치 파일 (비어 있으면 런타임에 동적 생성)
+        self.declare_parameter('poses_yaml_path', '')
 
         self.map_yaml_path   = self.get_parameter('map_yaml_path').value
         self.save_dir        = self.get_parameter('save_dir').value
         self.standoff_max    = self.get_parameter('standoff_max').value
         self.standoff_min    = self.get_parameter('standoff_min').value
         self.capture_timeout = self.get_parameter('capture_timeout').value
+        self.poses_yaml_path = self.get_parameter('poses_yaml_path').value
         self.map_pgm_path    = self.map_yaml_path.replace('.yaml', '.pgm')
 
         os.makedirs(self.save_dir, exist_ok=True)
@@ -173,21 +193,35 @@ class QRSnapshotNode(Node):
             start_xy = (pose.pose.position.x, pose.pose.position.y)
             self.get_logger().info(f"로봇 시작 위치: {start_xy}")
 
-        # 촬영 위치 생성
-        self.get_logger().info('촬영 위치 계획 중...')
-        try:
-            planner = WallCoveragePlanner(
-                pgm_path       = self.map_pgm_path,
-                yaml_path      = self.map_yaml_path,
-                max_standoff_m = self.standoff_max,
-                min_standoff_m = self.standoff_min,
-                start_world_xy = start_xy,
-            )
-            self.scan_poses = planner.generate(verbose=False)
-        except Exception as e:
-            self.get_logger().error(f'촬영 위치 생성 실패: {e}')
-            self.state = 'ERROR'
-            return
+        # 촬영 위치 로드 (사전 계산 파일 우선, 없으면 동적 생성)
+        if self.poses_yaml_path and os.path.isfile(self.poses_yaml_path):
+            self.get_logger().info(
+                f'사전 계산 좌표 로드: {self.poses_yaml_path}')
+            try:
+                self.scan_poses = _load_precomputed_poses(self.poses_yaml_path)
+                self.get_logger().info(
+                    f'  → {len(self.scan_poses)}개 포즈 로드 완료')
+            except Exception as e:
+                self.get_logger().error(f'좌표 파일 로드 실패: {e} — 동적 계획으로 fallback')
+                self.scan_poses = []
+        else:
+            self.scan_poses = []
+
+        if not self.scan_poses:
+            self.get_logger().info('촬영 위치 동적 계획 중...')
+            try:
+                planner = WallCoveragePlanner(
+                    pgm_path       = self.map_pgm_path,
+                    yaml_path      = self.map_yaml_path,
+                    max_standoff_m = self.standoff_max,
+                    min_standoff_m = self.standoff_min,
+                    start_world_xy = start_xy,
+                )
+                self.scan_poses = planner.generate(verbose=False)
+            except Exception as e:
+                self.get_logger().error(f'촬영 위치 생성 실패: {e}')
+                self.state = 'ERROR'
+                return
 
         self.get_logger().info(
             f'촬영 위치 {len(self.scan_poses)}개 생성 완료'
