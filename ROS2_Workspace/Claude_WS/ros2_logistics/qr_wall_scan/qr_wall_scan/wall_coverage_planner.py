@@ -95,18 +95,19 @@ class WallCoveragePlanner:
         self.start_world_xy = start_world_xy
 
         # 맵 내부 데이터 (로드 후 설정)
-        self.res  = None
-        self.ox   = None
-        self.oy   = None
-        self.h    = None
-        self.w    = None
-        self.occ  = None   # 점유 마스크 uint8 (1=벽)
-        self.dist = None   # distanceTransform (픽셀 단위)
+        self.res      = None
+        self.ox       = None
+        self.oy       = None
+        self.h        = None
+        self.w        = None
+        self.occ      = None      # 보정된 점유 마스크 uint8 (1=벽)
+        self.occ_raw  = None      # 원본 점유 마스크 (시각화용)
+        self.dist     = None      # distanceTransform (픽셀 단위)
 
         self._load_map()
 
     # =========================================================================
-    # 1. 맵 로드 + 거리 변환
+    # 1. 맵 로드 + 갭 보정 + 거리 변환
     # =========================================================================
     def _load_map(self):
         with open(self.yaml_path, 'r') as f:
@@ -123,13 +124,62 @@ class WallCoveragePlanner:
         self.h, self.w = img.shape
 
         occ = (img < 50).astype(np.uint8)
-        occ[[0, -1], :] = 1              # 가장자리 폐쇄 (열린 벽 방어)
+        occ[[0, -1], :] = 1              # 가장자리 폐쇄
         occ[:, [0, -1]] = 1
-        self.occ = occ
+        self.occ_raw = occ.copy()        # 원본 보존 (시각화용)
 
-        # 자유 공간에서 가장 가까운 벽까지 거리 (픽셀)
-        free_mask = (occ == 0).astype(np.uint8)
+        # 외곽 벽 갭 보정 (끊어진 벽을 연장선으로 연결)
+        self.occ = self._close_wall_gaps(occ)
+
+        # 보정된 맵 기준 거리 변환
+        free_mask = (self.occ == 0).astype(np.uint8)
         self.dist = cv2.distanceTransform(free_mask, cv2.DIST_L2, 5)
+
+    # =========================================================================
+    # 1-1. 외곽 벽 갭 폐쇄
+    # =========================================================================
+    def _close_wall_gaps(self, occ: np.ndarray, max_gap_m: float = 0.30) -> np.ndarray:
+        """
+        끊어진 외곽 벽을 연장선 방향으로 이어붙임.
+
+        알고리즘:
+          1. 형태학적 닫힘(dilation→erosion)으로 max_gap_m 이내 갭 브리징
+          2. 가장 큰 연결 성분 = 외곽 벽 전체 추출
+          3. 외곽 컨투어 → 닫힌 폴리곤 경계로 재생성
+             (컨투어가 직선으로 이어지면서 연장선 효과)
+          4. 원본 occ와 합성
+
+        max_gap_m : 연결할 최대 갭 크기 (m). 기본 0.30m = 6픽셀(0.05m/cell 기준)
+        """
+        k = max(3, int(max_gap_m / self.res))
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k, k))
+
+        # 1단계: 닫힘 연산으로 갭 브리징
+        closed = cv2.morphologyEx(occ, cv2.MORPH_CLOSE, kernel)
+
+        # 2단계: 가장 큰 연결 성분 (외곽 벽)
+        n, labels, stats, _ = cv2.connectedComponentsWithStats(closed, 8)
+        if n <= 1:
+            return occ
+        idx        = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+        outer_mask = (labels == idx).astype(np.uint8)
+
+        # 3단계: 외곽 컨투어 → 닫힌 폴리곤 경계
+        contours, _ = cv2.findContours(
+            outer_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return occ
+        outer_contour = max(contours, key=cv2.contourArea)
+
+        # 컨투어를 직선 세그먼트로 근사화 (연장선 효과 강화)
+        epsilon   = 0.01 * cv2.arcLength(outer_contour, True)
+        approx    = cv2.approxPolyDP(outer_contour, epsilon, True)
+
+        # 근사화된 폴리곤 경계선을 occ에 추가 (두께 2px)
+        corrected = occ.copy()
+        cv2.drawContours(corrected, [approx], -1, 1, thickness=2)
+
+        return corrected
 
     # =========================================================================
     # 2. 외곽 벽 컨투어 추출

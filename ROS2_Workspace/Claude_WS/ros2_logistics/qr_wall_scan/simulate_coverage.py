@@ -88,19 +88,53 @@ def main():
     oy  = planner.oy
     h   = planner.h
 
-    # 맵 이미지 (flip 이미 적용된 상태)
-    img = planner.dist   # 거리 변환으로 배경 표시 (더 예쁨)
-    # 원본 PGM을 배경으로 사용
-    raw = cv2.imread(pgm_path, cv2.IMREAD_GRAYSCALE)
-    raw = cv2.flip(raw, 0)
+    raw     = cv2.imread(pgm_path, cv2.IMREAD_GRAYSCALE)
+    raw     = cv2.flip(raw, 0)
+    occ_raw = planner.occ_raw   # 원본 점유 마스크
+    occ_fix = planner.occ       # 보정된 점유 마스크
 
-    fig, ax = plt.subplots(figsize=(12, 10))
+    # 보정 전/후 비교 + 촬영 계획 — 2열 레이아웃
+    fig, axes = plt.subplots(1, 2, figsize=(20, 10))
+    fig.patch.set_facecolor('#1a1a2e')
+
+    extent = [ox, ox + planner.w * res, oy, oy + planner.h * res]
+
+    # ── 왼쪽: 보정 전/후 맵 비교 ─────────────────────────────────────────────
+    ax_map = axes[0]
+    ax_map.set_facecolor('#1a1a2e')
+    ax_map.imshow(raw, cmap='gray', origin='lower',
+                  extent=extent, alpha=0.6, zorder=0)
+
+    # 원본 벽 (빨강)
+    raw_wall = np.zeros((*occ_raw.shape, 4), dtype=np.float32)
+    raw_wall[occ_raw == 1] = [1.0, 0.2, 0.2, 0.6]
+    ax_map.imshow(raw_wall, origin='lower', extent=extent, zorder=1)
+
+    # 보정 추가 픽셀 (파랑 = 갭 보정된 부분)
+    added = np.logical_and(occ_fix == 1, occ_raw == 0).astype(np.uint8)
+    fix_overlay = np.zeros((*added.shape, 4), dtype=np.float32)
+    fix_overlay[added == 1] = [0.2, 0.6, 1.0, 0.8]
+    ax_map.imshow(fix_overlay, origin='lower', extent=extent, zorder=2)
+
+    ax_map.set_title('맵 보정 결과\n빨강=원본벽  파랑=갭 보정(연장선)',
+                     color='white', fontsize=10)
+    ax_map.set_xlabel('World X (m)', color='white')
+    ax_map.set_ylabel('World Y (m)', color='white')
+    ax_map.tick_params(colors='white')
+    for sp in ax_map.spines.values():
+        sp.set_edgecolor('#555555')
+
+    # ── 오른쪽: 촬영 계획 ────────────────────────────────────────────────────
+    ax  = axes[1]
     ax.set_facecolor('#1a1a2e')
 
-    # 맵 배경 (월드 좌표 extent)
-    extent = [ox, ox + planner.w * res, oy, oy + planner.h * res]
+    # 보정된 맵 배경
     ax.imshow(raw, cmap='gray', origin='lower',
-              extent=extent, alpha=0.7, zorder=0)
+              extent=extent, alpha=0.55, zorder=0)
+    # 보정된 벽 오버레이 (반투명 파랑)
+    occ_vis = np.zeros((*occ_fix.shape, 4), dtype=np.float32)
+    occ_vis[occ_fix == 1] = [0.3, 0.5, 1.0, 0.35]
+    ax.imshow(occ_vis, origin='lower', extent=extent, zorder=1)
 
     # ── 색상 팔레트 ──────────────────────────────────────────────────────────
     colors = plt.cm.plasma(np.linspace(0.1, 0.9, len(poses)))
@@ -169,11 +203,10 @@ def main():
         spine.set_edgecolor('#555555')
 
     diag_count = sum(1 for p in poses if p.angle_to_wall > 0)
-    title = (f"QR 벽 촬영 계획  |  총 {len(poses)}개 촬영 위치  "
-             f"(수직 {len(poses)-diag_count}개 + 사선 {diag_count}개)\n"
+    title = (f"촬영 계획  |  총 {len(poses)}개  "
+             f"(수직 {len(poses)-diag_count} + 사선 {diag_count})\n"
              f"max_standoff={max_std}m  FOV=62.2°  최대 사선=30°")
     ax.set_title(title, color='white', fontsize=10, pad=12)
-    fig.patch.set_facecolor('#1a1a2e')
 
     plt.tight_layout()
 
