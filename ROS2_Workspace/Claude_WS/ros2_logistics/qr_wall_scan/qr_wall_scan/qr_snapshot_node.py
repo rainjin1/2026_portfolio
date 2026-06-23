@@ -1,0 +1,552 @@
+#!/usr/bin/env python3
+"""
+qr_snapshot_node.py — FOV 기반 QR 스냅샷 탐색 노드
+=====================================================
+동작 순서:
+  1. /map 수신 → WallCoveragePlanner로 촬영 위치 목록 생성
+  2. Nav2로 각 촬영 위치에 순서대로 이동
+  3. 도착 시 카메라에서 사진 1장만 캡처 → QR 감지
+  4. QR 픽셀 위치 + 로봇 포즈 → QR 월드 좌표 역산
+  5. 결과 저장 (YAML + TXT)
+
+기존 qr_wall_scan_node.py 와 차이점:
+  - 연속 영상 스트리밍 → 촬영 위치에서 1장만 캡처 (네트워크 부하 최소화)
+  - 44개 경유지 → 최소 촬영 횟수 (그리디 커버리지)
+  - QR 위치 정밀 역산 (픽셀 위치 + TF2 포즈 + 화각 계산)
+
+실행:
+  ros2 run qr_wall_scan qr_snapshot_node --ros-args \\
+    -p map_yaml_path:=/home/ubuntu22/map/0622_map_final.yaml \\
+    -p save_dir:=/home/ubuntu22/qr_scans \\
+    -p capture_timeout:=3.0
+"""
+
+import json
+import math
+import os
+import time
+import threading
+from datetime import datetime
+
+import cv2
+import numpy as np
+import yaml
+import rclpy
+from rclpy.node import Node
+from rclpy.executors import MultiThreadedExecutor
+from nav_msgs.msg import OccupancyGrid
+from sensor_msgs.msg import CompressedImage
+from std_msgs.msg import String
+from geometry_msgs.msg import PoseStamped
+import tf2_ros
+from cv_bridge import CvBridge
+from pyzbar import pyzbar
+
+try:
+    from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
+    NAV2_AVAILABLE = True
+except ImportError:
+    NAV2_AVAILABLE = False
+
+from qr_wall_scan.wall_coverage_planner import WallCoveragePlanner, ScanPose
+from qr_wall_scan.map_coord_utils import MapCoordSystem
+
+
+# ── 카메라 파라미터 (라즈베리파이 카메라 v2 / 640×480) ───────────────────────
+IMG_WIDTH      = 640
+IMG_HEIGHT     = 480
+FOV_DEG        = 62.2
+FOCAL_LEN_PX   = (IMG_WIDTH / 2.0) / math.tan(math.radians(FOV_DEG / 2.0))
+
+# ── QR 화이트리스트 ───────────────────────────────────────────────────────────
+WHITELIST = {
+    'QR-001', 'QR-002', 'QR-003',
+    'QR-CHEONAN', 'QR-PYEONGTAEK', 'QR-GONGJU', 'QR-ARRIVAL',
+}
+
+
+class QRSnapshotNode(Node):
+
+    def __init__(self):
+        super().__init__('qr_snapshot_node')
+
+        # ── 파라미터 ──────────────────────────────────────────────────────────
+        self.declare_parameter('map_yaml_path',  '/home/ubuntu22/map/0622_map_final.yaml')
+        self.declare_parameter('save_dir',       '/home/ubuntu22/qr_scans')
+        self.declare_parameter('standoff_max',   0.80)
+        self.declare_parameter('standoff_min',   0.30)
+        self.declare_parameter('capture_timeout', 3.0)   # 사진 캡처 대기 최대 시간(초)
+
+        self.map_yaml_path   = self.get_parameter('map_yaml_path').value
+        self.save_dir        = self.get_parameter('save_dir').value
+        self.standoff_max    = self.get_parameter('standoff_max').value
+        self.standoff_min    = self.get_parameter('standoff_min').value
+        self.capture_timeout = self.get_parameter('capture_timeout').value
+        self.map_pgm_path    = self.map_yaml_path.replace('.yaml', '.pgm')
+
+        os.makedirs(self.save_dir, exist_ok=True)
+
+        # ── 내부 상태 ─────────────────────────────────────────────────────────
+        self.state         = 'WAITING_MAP'
+        self.coord         = MapCoordSystem()
+        self.bridge        = CvBridge()
+        self.navigator     = None
+        self._nav_thread   = None
+        self._nav_lock     = threading.Lock()
+
+        # 촬영 제어
+        self._capture_ready  = False   # True일 때만 이미지 처리
+        self._captured_frame = None    # 캡처된 프레임
+        self._capture_lock   = threading.Lock()
+
+        # 결과
+        self.scan_poses: list[ScanPose] = []   # 계획된 촬영 위치
+        self.qr_results: list[dict]    = []    # 감지된 QR 결과
+
+        # ── TF2 ───────────────────────────────────────────────────────────────
+        self.tf_buffer   = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+
+        # ── /map 구독 (TRANSIENT_LOCAL — map_server 호환) ─────────────────────
+        map_qos = rclpy.qos.QoSProfile(
+            depth=1,
+            durability=rclpy.qos.DurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=rclpy.qos.ReliabilityPolicy.RELIABLE,
+        )
+        self.map_sub = self.create_subscription(
+            OccupancyGrid, '/map', self._map_callback, map_qos)
+
+        # ── 카메라 구독 ────────────────────────────────────────────────────────
+        # 도착 시에만 1장 처리 → capture_ready 플래그로 제어
+        self.img_sub = self.create_subscription(
+            CompressedImage,
+            '/camera/image_raw/compressed',
+            self._image_callback,
+            rclpy.qos.qos_profile_sensor_data,
+        )
+
+        # ── /qr/metadata 퍼블리시 (qr_db_crosscheck_node 호환) ───────────────
+        self.qr_meta_pub = self.create_publisher(String, '/qr/metadata', 10)
+
+        # ── 상태 루프 (1Hz) ──────────────────────────────────────────────────
+        self.state_timer = self.create_timer(1.0, self._state_loop)
+
+        self.get_logger().info(
+            f"QR 스냅샷 노드 시작 [WAITING_MAP]\n"
+            f"  맵:   {self.map_yaml_path}\n"
+            f"  standoff: {self.standoff_min}~{self.standoff_max}m\n"
+            f"  저장: {self.save_dir}"
+        )
+
+    # =========================================================================
+    # /map 콜백
+    # =========================================================================
+    def _map_callback(self, msg: OccupancyGrid):
+        self.coord.update_from_occupancy_grid(msg)
+        if self.state == 'WAITING_MAP':
+            b = self.coord.get_bounds()
+            self.get_logger().info(
+                f"[WAITING_MAP → MAP_RECEIVED] /map 수신\n"
+                f"  맵 크기: {b.max_x:.2f} x {b.max_y:.2f} m"
+            )
+            self.state = 'MAP_RECEIVED'
+
+    # =========================================================================
+    # 상태머신 (1Hz)
+    # =========================================================================
+    def _state_loop(self):
+        if self.state == 'MAP_RECEIVED':
+            self._plan_and_navigate()
+        elif self.state == 'NAVIGATING':
+            pass  # 네비게이션은 별도 스레드에서 처리
+
+    # =========================================================================
+    # 촬영 계획 + 네비게이션 시작
+    # =========================================================================
+    def _plan_and_navigate(self):
+        self.state = 'PLANNING'
+
+        # 로봇 현재 위치 (시작 위치로 사용)
+        start_xy = (0.0, 0.0)
+        pose = self._get_pose()
+        if pose:
+            start_xy = (pose.pose.position.x, pose.pose.position.y)
+            self.get_logger().info(f"로봇 시작 위치: {start_xy}")
+
+        # 촬영 위치 생성
+        self.get_logger().info('촬영 위치 계획 중...')
+        try:
+            planner = WallCoveragePlanner(
+                pgm_path       = self.map_pgm_path,
+                yaml_path      = self.map_yaml_path,
+                max_standoff_m = self.standoff_max,
+                min_standoff_m = self.standoff_min,
+                start_world_xy = start_xy,
+            )
+            self.scan_poses = planner.generate(verbose=False)
+        except Exception as e:
+            self.get_logger().error(f'촬영 위치 생성 실패: {e}')
+            self.state = 'ERROR'
+            return
+
+        self.get_logger().info(
+            f'촬영 위치 {len(self.scan_poses)}개 생성 완료'
+        )
+
+        if not NAV2_AVAILABLE:
+            self.get_logger().error('nav2_simple_commander 미설치!')
+            self.state = 'ERROR'
+            return
+
+        # 네비게이션 스레드 시작
+        self._nav_thread = threading.Thread(
+            target=self._navigation_worker, daemon=True)
+        self._nav_thread.start()
+        self.state = 'NAVIGATING'
+
+    # =========================================================================
+    # 네비게이션 워커 (별도 스레드)
+    # =========================================================================
+    def _navigation_worker(self):
+        nav = BasicNavigator()
+        self.get_logger().info(
+            'Nav2 활성화 대기 중... (RViz에서 2D Pose Estimate 설정 필요)')
+        nav.waitUntilNav2Active()
+        self.get_logger().info('Nav2 준비 완료')
+
+        with self._nav_lock:
+            self.navigator = nav
+
+        total = len(self.scan_poses)
+        for i, scan_pose in enumerate(self.scan_poses):
+            self.get_logger().info(
+                f'[{i+1}/{total}] 이동 → '
+                f'({scan_pose.world_x:.3f}, {scan_pose.world_y:.3f}) '
+                f'yaw={scan_pose.yaw_deg:.1f}°  '
+                f'dist={scan_pose.standoff_m:.2f}m'
+                + (f'  사선{scan_pose.angle_to_wall}°'
+                   if scan_pose.angle_to_wall > 0 else '')
+            )
+
+            # 목표 포즈 설정
+            goal = PoseStamped()
+            goal.header.frame_id = 'map'
+            goal.header.stamp    = self.get_clock().now().to_msg()
+            goal.pose.position.x = scan_pose.world_x
+            goal.pose.position.y = scan_pose.world_y
+            yaw = scan_pose.yaw_rad
+            goal.pose.orientation.z = math.sin(yaw / 2.0)
+            goal.pose.orientation.w = math.cos(yaw / 2.0)
+
+            nav.goToPose(goal)
+
+            # 도착 대기
+            while not nav.isTaskComplete():
+                time.sleep(0.2)
+
+            result = nav.getResult()
+            if result != TaskResult.SUCCEEDED:
+                self.get_logger().warn(
+                    f'  [{i+1}] 도달 실패 (결과: {result}) — 다음으로 진행')
+                continue
+
+            self.get_logger().info(f'  [{i+1}] 도착 완료 → 사진 캡처 시작')
+
+            # 사진 캡처 (capture_ready 플래그 활성화)
+            captured = self._wait_for_capture(scan_pose)
+
+            if captured:
+                self.get_logger().info(
+                    f'  [{i+1}] QR 처리 완료 '
+                    f'(누적 감지: {len(self.qr_results)}개)')
+            else:
+                self.get_logger().warn(f'  [{i+1}] 캡처 타임아웃')
+
+        # 완료
+        self.state = 'DONE'
+        self._save_results()
+        self.get_logger().info(
+            f'[완료] 총 {total}개 위치 촬영 | '
+            f'QR {len(self.qr_results)}개 감지 | '
+            f'저장: {self.save_dir}'
+        )
+
+    # =========================================================================
+    # 사진 캡처 대기
+    # =========================================================================
+    def _wait_for_capture(self, scan_pose: ScanPose) -> bool:
+        """
+        _capture_ready 플래그를 세우고 capture_timeout초 내에
+        이미지 콜백이 처리하도록 대기.
+        """
+        with self._capture_lock:
+            self._captured_frame = None
+            self._capture_ready  = True
+
+        deadline = time.time() + self.capture_timeout
+        while time.time() < deadline:
+            time.sleep(0.05)
+            with self._capture_lock:
+                frame = self._captured_frame
+                if frame is not None:
+                    self._capture_ready = False
+                    break
+        else:
+            with self._capture_lock:
+                self._capture_ready = False
+            return False
+
+        # QR 감지 + 좌표 역산
+        self._process_frame(frame, scan_pose)
+        return True
+
+    # =========================================================================
+    # 이미지 콜백 (capture_ready일 때 1장만 처리)
+    # =========================================================================
+    def _image_callback(self, msg: CompressedImage):
+        with self._capture_lock:
+            if not self._capture_ready or self._captured_frame is not None:
+                return  # 대기 중이 아니거나 이미 캡처됨
+
+        try:
+            frame = self.bridge.compressed_imgmsg_to_cv2(
+                msg, desired_encoding='bgr8')
+        except Exception as e:
+            self.get_logger().warn(f'이미지 변환 실패: {e}')
+            return
+
+        with self._capture_lock:
+            self._captured_frame = frame
+
+    # =========================================================================
+    # 프레임 처리 + QR 위치 역산
+    # =========================================================================
+    def _process_frame(self, frame, scan_pose: ScanPose):
+        """
+        캡처된 프레임에서 QR 코드 감지 후 월드 좌표 역산.
+
+        역산 원리:
+          - 로봇 포즈 (rx, ry, ryaw): TF2로 획득
+          - QR 픽셀 중심 (qx, qy): pyzbar 바운딩박스 중심
+          - 수평 각도 오프셋: α = atan((qx - W/2) / focal_len_px)
+          - QR 방향 (월드): ryaw + α
+          - QR 거리: 촬영 위치 standoff_m (벽 위에 있다고 가정)
+          - QR 월드 좌표: (rx + d*cos(ryaw+α), ry + d*sin(ryaw+α))
+        """
+        pose_msg = self._get_pose()
+        robot_x = robot_y = robot_yaw = None
+
+        if pose_msg:
+            robot_x = pose_msg.pose.position.x
+            robot_y = pose_msg.pose.position.y
+            q = pose_msg.pose.orientation
+            robot_yaw = math.atan2(
+                2*(q.w*q.z + q.x*q.y),
+                1 - 2*(q.y*q.y + q.z*q.z)
+            )
+
+        # 이미지 저장
+        ts_str   = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:19]
+        raw_name = f'snap_{ts_str}.jpg'
+        raw_path = os.path.join(self.save_dir, raw_name)
+        cv2.imwrite(raw_path, frame)
+
+        # QR 감지
+        h, w = frame.shape[:2]
+        qr_list = [d for d in pyzbar.decode(frame) if d.type == 'QRCODE']
+
+        for qr in qr_list:
+            qr_data = qr.data.decode('utf-8').strip()
+            if not qr_data or qr_data not in WHITELIST:
+                continue
+
+            # QR 픽셀 중심
+            qx = qr.rect.left + qr.rect.width  / 2.0
+            qy = qr.rect.top  + qr.rect.height / 2.0
+
+            # 수평 각도 오프셋 (카메라 중심 기준)
+            alpha = math.atan2(qx - w / 2.0, FOCAL_LEN_PX)
+
+            # QR 월드 좌표 역산
+            qr_world_x = qr_world_y = None
+            approach   = None
+
+            if robot_x is not None:
+                d = scan_pose.standoff_m
+                direction = robot_yaw + alpha
+                qr_world_x = robot_x + d * math.cos(direction)
+                qr_world_y = robot_y + d * math.sin(direction)
+
+                # 맵 기준 좌표
+                if self.coord.initialized:
+                    map_x, map_y = self.coord.world_to_map_bl(
+                        qr_world_x, qr_world_y)
+                else:
+                    map_x = map_y = None
+
+                # 최적 접근 포즈 (벽에서 10cm, 정면)
+                # QR이 있는 벽의 법선 = 촬영 방향의 반대
+                wall_dir = direction + math.pi
+                approach_x = qr_world_x + 0.10 * math.cos(wall_dir)
+                approach_y = qr_world_y + 0.10 * math.sin(wall_dir)
+                approach_yaw = direction   # QR 방향을 바라봄
+                approach = {
+                    'world_x': round(approach_x,  4),
+                    'world_y': round(approach_y,  4),
+                    'yaw_rad': round(approach_yaw, 4),
+                    'yaw_deg': round(math.degrees(approach_yaw), 1),
+                }
+            else:
+                map_x = map_y = None
+
+            result = {
+                'qr_data':       qr_data,
+                'timestamp':     ts_str,
+                'snap_file':     raw_name,
+                # QR 픽셀 정보
+                'pixel_x':       round(qx, 1),
+                'pixel_y':       round(qy, 1),
+                'alpha_deg':     round(math.degrees(alpha), 2),
+                # 로봇 포즈 (촬영 시점)
+                'robot_world_x': round(robot_x,   4) if robot_x   else None,
+                'robot_world_y': round(robot_y,   4) if robot_y   else None,
+                'robot_yaw_deg': round(math.degrees(robot_yaw), 1) if robot_yaw else None,
+                # QR 역산 좌표
+                'qr_world_x':    round(qr_world_x, 4) if qr_world_x else None,
+                'qr_world_y':    round(qr_world_y, 4) if qr_world_y else None,
+                'qr_map_x':      round(map_x, 4) if map_x else None,
+                'qr_map_y':      round(map_y, 4) if map_y else None,
+                # 다음 노드용 최적 접근 포즈
+                'approach_pose': approach,
+                # 촬영 위치 정보
+                'scan_pose': {
+                    'world_x':  scan_pose.world_x,
+                    'world_y':  scan_pose.world_y,
+                    'yaw_deg':  scan_pose.yaw_deg,
+                    'standoff': scan_pose.standoff_m,
+                    'angle':    scan_pose.angle_to_wall,
+                },
+            }
+            self.qr_results.append(result)
+
+            # /qr/metadata 퍼블리시 (qr_db_crosscheck_node 연동)
+            self.qr_meta_pub.publish(
+                String(data=json.dumps(result, ensure_ascii=False))
+            )
+
+            self.get_logger().info(
+                f'    [QR] "{qr_data}"  '
+                f'α={math.degrees(alpha):.1f}°  '
+                + (f'world=({qr_world_x:.3f},{qr_world_y:.3f})'
+                   if qr_world_x else '좌표 없음')
+            )
+
+    # =========================================================================
+    # TF2 포즈 획득
+    # =========================================================================
+    def _get_pose(self, stamp=None) -> PoseStamped | None:
+        try:
+            tf_time = (rclpy.time.Time.from_msg(stamp)
+                       if stamp else rclpy.time.Time())
+            tf = self.tf_buffer.lookup_transform(
+                'map', 'base_link', tf_time,
+                timeout=rclpy.duration.Duration(seconds=0.5))
+            p = PoseStamped()
+            p.header           = tf.header
+            p.pose.position.x  = tf.transform.translation.x
+            p.pose.position.y  = tf.transform.translation.y
+            p.pose.orientation = tf.transform.rotation
+            return p
+        except Exception:
+            return None
+
+    # =========================================================================
+    # 결과 저장 (YAML + TXT)
+    # =========================================================================
+    def _save_results(self):
+        # ── YAML ─────────────────────────────────────────────────────────────
+        yaml_path = os.path.join(self.save_dir, 'qr_scan_results.yaml')
+        doc = {
+            'session_info': {
+                'map_yaml':       self.map_yaml_path,
+                'standoff_max_m': self.standoff_max,
+                'standoff_min_m': self.standoff_min,
+                'scan_poses':     len(self.scan_poses),
+                'qr_detected':    len(self.qr_results),
+            },
+            'scan_plan': [
+                {'idx': i+1,
+                 'x': p.world_x, 'y': p.world_y,
+                 'yaw_deg': p.yaw_deg,
+                 'standoff_m': p.standoff_m,
+                 'angle_to_wall': p.angle_to_wall}
+                for i, p in enumerate(self.scan_poses)
+            ],
+            'qr_results': self.qr_results,
+        }
+        with open(yaml_path, 'w', encoding='utf-8') as f:
+            yaml.dump(doc, f, allow_unicode=True, default_flow_style=False)
+
+        # ── TXT (사람이 읽는 요약) ────────────────────────────────────────────
+        txt_path = os.path.join(self.save_dir, 'qr_scan_results.txt')
+        now_str  = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        lines    = [
+            '=' * 60,
+            '  QR 스냅샷 스캔 결과',
+            f'  생성: {now_str}',
+            f'  맵:   {self.map_yaml_path}',
+            f'  촬영 위치: {len(self.scan_poses)}개 | QR 감지: {len(self.qr_results)}개',
+            '=' * 60,
+            '',
+            '[ 촬영 계획 ]',
+        ]
+        for i, p in enumerate(self.scan_poses):
+            diag = f' (사선 {p.angle_to_wall}°)' if p.angle_to_wall > 0 else ''
+            lines.append(
+                f'  [{i+1:02d}] x={p.world_x:7.3f}  y={p.world_y:7.3f}  '
+                f'yaw={p.yaw_deg:6.1f}°  dist={p.standoff_m:.2f}m{diag}')
+        lines += ['', '[ 감지된 QR ]']
+
+        if not self.qr_results:
+            lines.append('  (없음)')
+        for r in self.qr_results:
+            ap = r.get('approach_pose')
+            lines += [
+                f"  QR: {r['qr_data']}",
+                f"    월드 좌표:      ({r.get('qr_world_x')}, {r.get('qr_world_y')})",
+                f"    맵 기준 좌표:   ({r.get('qr_map_x')}, {r.get('qr_map_y')})",
+                f"    카메라 각도:    {r.get('alpha_deg')}°",
+            ]
+            if ap:
+                lines += [
+                    f"    최적 접근 포즈:",
+                    f"      x={ap['world_x']}  y={ap['world_y']}  "
+                    f"yaw={ap['yaw_deg']}°",
+                ]
+            lines.append('')
+
+        lines += ['-' * 60]
+        with open(txt_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines))
+
+        self.get_logger().info(
+            f'결과 저장 완료:\n  {yaml_path}\n  {txt_path}')
+
+
+# =============================================================================
+def main(args=None):
+    rclpy.init(args=args)
+    node     = QRSnapshotNode()
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
+    try:
+        executor.spin()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()

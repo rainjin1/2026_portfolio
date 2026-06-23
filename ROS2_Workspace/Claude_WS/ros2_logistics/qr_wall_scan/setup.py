@@ -21,6 +21,7 @@ setup(
     entry_points={
         'console_scripts': [
             'qr_wall_scan_node = qr_wall_scan.qr_wall_scan_node:main',
+            'qr_snapshot_node = qr_wall_scan.qr_snapshot_node:main',
             'qr_db_crosscheck_node = qr_wall_scan.qr_db_crosscheck_node:main',
         ],
     },
