@@ -245,10 +245,14 @@ class QRWallScanNode(Node):
                 f'이미지 변환 실패: {e}', throttle_duration_sec=5.0)
             return
 
-        qr_list = pyzbar.decode(frame)
+        WHITELIST = {
+            'QR-001', 'QR-002', 'QR-003',
+            'QR-CHEONAN', 'QR-PYEONGTAEK', 'QR-GONGJU', 'QR-ARRIVAL',
+        }
+        qr_list = [d for d in pyzbar.decode(frame) if d.type == 'QRCODE']
         for qr in qr_list:
             qr_data = qr.data.decode('utf-8').strip()
-            if not qr_data:
+            if not qr_data or qr_data not in WHITELIST:
                 continue
 
             # 쿨다운: 같은 QR은 scan_cooldown초마다 1회만
