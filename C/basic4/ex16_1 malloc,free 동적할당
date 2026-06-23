@@ -1,0 +1,22 @@
+#include <stdio.h>
+
+int main()
+{
+    int a;
+    a = 100;
+    //a는 그냥 우리가 쓰던 곳에 씀.
+
+    //heap(동적영역에 만들고)사용하고싶음.
+    int *pi;
+    pi = /*void이걸 정수형으로 바꿔주기*/ (int *)malloc(sizeof(int)); //보이드포인터임. 대입은 되지만, 정수형포인터로 캐스팅하고 바꿔야함.
+    //pi의 4바이트는 heap에 들어있음. 주소값은 컴파일러가 알아서 정해줌.
+
+    *pi = 10;
+    printf("pi : %p\na : %p\n", pi, &a);
+    printf("a : %d\n", a);
+    printf("%d\n", *pi);
+
+    //malloc으로 만든 pi는 지워줘야지, 지우지 않으면 영원히 남아있음.
+    free(pi);
+    return 0;
+}   

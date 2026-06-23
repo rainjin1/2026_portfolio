@@ -1,0 +1,28 @@
+#include <stdio.h>
+char ch = 'A';
+int main(void)
+{
+    char *dessert = "apple"; //문자열은 스택이 아닌 문자열영역에 저장됨.
+    dessert = "banana";
+    printf("%s\n", dessert);
+    printf("%p\n", &ch);
+    int a = 10;
+    double b = 3.14;
+    printf("%p\n", &b);
+    printf("%p\n", &a);
+
+    printf("%c\n", *("apple"+4)); // "apple" 하면 a, +1 = p / +2 = p / +3 = l
+    
+    char str[80];
+    scanf("%s", str); //apple jam
+    printf("첫 번째 단어 : %s\n", str);
+    scanf("%s", str);
+    printf("두 번째 단어 : %s\n", str);
+    
+    //scanf 대신 fgets 를 사용함. 문자열을 받을때는.
+
+    fgets(str, sizeof(str), stdin); // 이게 표준임. 사이즈오브를 쓸 수 있기 때문에 fgets를 씀. 코드가 길어지게되면 변수길이를 몰라서 버그뜰때가 많음.
+    //사이즈를 적어주면 컴파일러가 함수를 잘 찾아줌.
+    
+    return 0;
+}

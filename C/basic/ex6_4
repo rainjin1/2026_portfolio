@@ -1,0 +1,21 @@
+//별 5개 그리고 줄 바꾸기
+
+#define _CRT_SECURE_NO_WARNINGS 
+#include <stdio.h>
+int main()
+{
+	xfor (int i = 0; i < 3; i++)
+	{
+		for (int k = 0; k < 5; k++)
+		{
+			printf("*");
+		}
+		printf("\n");
+	}
+	for (int i = 0; i < 15; i++)
+	{
+		printf("*");
+	}
+
+	return 0;
+}

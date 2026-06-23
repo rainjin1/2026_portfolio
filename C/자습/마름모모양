@@ -1,0 +1,33 @@
+#define _CRT_SECURE_NO_WARNINGS
+#include <stdio.h>
+
+int main() {
+    int index;
+    scanf("%d", &index);
+
+    int mid = n / 2; // 중간 지점 (3이면 1, 5면 2)
+
+    // 1. 윗부분 + 중간줄 출력 (i가 0부터 중간까지)
+    for (int i = 0; i <= mid; i++) {
+        // 양옆 O의 개수는 (mid - i)개
+        for (int j = 0; j < mid - i; j++) printf("O");
+        // 가운데 ㅁ의 개수는 (n - 양옆 O의 개수)
+        for (int j = 0; j < index - (mid - i) * 2; j++) printf("X");
+        // 다시 양옆 O 출력
+        for (int j = 0; j < mid - i; j++) printf("O");
+        printf("\n");
+    }
+
+    // 2. 아랫부분 출력 (i가 1부터 중간까지)
+    for (int i = 1; i <= mid; i++) {
+        // 아래로 갈수록 O의 개수가 다시 늘어남 (i개만큼)
+        for (int j = 0; j < i; j++) printf("O");
+        // 가운데 X의 개수는 감소
+        for (int j = 0; j < index - (i * 2); j++) printf("X");
+        // 다시 양옆 O 출력
+        for (int j = 0; j < i; j++) printf("O");
+        printf("\n");
+    }
+
+    return 0;
+}

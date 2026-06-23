@@ -1,0 +1,22 @@
+#include <stdio.h>
+
+
+int main()
+{
+    int a;
+    int* pa;
+    pa= &a;
+    *pa = 10;
+    int b = 15;
+    int total;
+    double avg;
+    int *pb = &b;
+    double *pg=&avg;
+    int *pt = &total;
+    *pt=*pa + *pb;
+    *pg=*pt/2.0;
+
+    a=2000;
+    printf("%d %d %d %d\n", *pa, *pb, *pt, *pg);
+    return 0;
+}

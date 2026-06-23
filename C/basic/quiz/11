@@ -1,0 +1,62 @@
+/*
+if else까지
+변수와 상수
+자료형(type): char(1byte), int(4bytes), float(4bytes), double(8), long(4), long long(8)
+-if(조건)
+ else if(조건)
+ else
+
+총정리 문제.
+-화면단
+-제어문써서 출력하기.
+
+1)외계인
+2)사람
+3)군인
+입력하세요: 
+=1번 입력시- 나는 외계인을 보았습니다
+-------------------------------------
+=2번 입력시- 나는 사람을 보았습니다.
+-------------------------------------
+=3번 입력시- 나는 군인을 보았습니다.
+*/
+
+
+
+
+#define _CRT_SECURE_NO_WARNINGS 
+#include <stdio.h>
+int main()
+{
+	int Character;
+	printf("1. 외계인\n2. 사람\n3.군인\n셋 중 하나를 선택하십시오.(숫자로 입력하십시오.)\n");
+	scanf("%d", &Character);
+	/*
+	if (Character==1)
+	{
+		printf("나는 외계인을 보았습니다.");
+	}
+	else if (Character==2)
+	{
+		printf("나는 사람을 보았습니다.");
+	}
+	else
+	{
+		printf("나는 군인을 보았습니다.");
+	}
+	*/
+
+	switch (Character)
+	{
+	case 1:
+		printf("나는 외계인을 보았습니다.");
+		break;
+	case 2:
+		printf("나는 사람을 보았습니다.");
+		break;
+	case 3:
+		printf("나는 군인을 보았습니다.");
+		break;
+	}
+	return 0;
+}

@@ -1,0 +1,20 @@
+if / else 사용 예시
+
+#define _CRT_SECURE_NO_WARNINGS 
+#include <stdio.h>
+int main()
+{
+	int a = 9;
+	int b = 0;
+	if (a>10)
+	{
+		b = a;
+		printf("%d", b);
+	}
+	else
+	{
+		printf("10보다 작습니다.");
+	}
+
+	return 0;
+}

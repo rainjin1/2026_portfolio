@@ -1,0 +1,26 @@
+﻿프로그램 명: CtoF  
+
+
+섭씨 온도를 화씨 온도로 변환하는 프로그램을 작성하세요.
+
+화씨 온도 = 9 / 5 * 섭씨온도 + 32
+
+입력
+1 에서 100 사이의 자연수가 입력으로 주어진다.
+
+출력
+소수점 둘째자리까지 출력한다.
+
+#define _CRT_SECURE_NO_WARNINGS 
+#include <stdio.h>
+int main()
+{
+	//c to f 섭씨 to  화씨
+	int C_temprature;
+	printf("변환하고 싶은 섭씨온도를 입력하시오. (1~100):");
+	scanf("%d", &C_temprature);
+	double F_temprature = 9.0 / 5.0 * (double)C_temprature + 32;
+	printf("변환한 화씨온도는 %.2lf입니다", F_temprature);
+
+	return 0;
+}

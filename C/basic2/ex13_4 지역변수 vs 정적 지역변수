@@ -1,0 +1,36 @@
+#include <stdio.h>
+
+void auto_func()
+{
+    int a = 0;
+    a++;
+    printf("%d\n", a);
+}
+void static_func()
+{
+    static int a; // 정적 지역변수 선언 걍 선언하면 초기화됨.
+    a++;
+    printf("%d\n", a);
+}
+
+int main()
+{   
+    
+    printf("일반 지역변수(auto)를 사용한 함수...\n");
+
+
+    for (int i = 0; i < 3; i++)
+    {
+        auto_func();
+    }
+
+    for (int i  = 0; i < 5; i++)
+    {
+        static_func();
+    }
+    
+    
+
+
+    return 0;
+}

@@ -1,0 +1,13 @@
+#include <stdio.h>
+
+int main()
+{
+    int ary[3]={1, 2, 3};
+    int *pa =ary;
+    int *pb=(ary+2);
+    int i;
+  
+    printf("%d", (int)(pb - pa));
+
+    return 0;
+}

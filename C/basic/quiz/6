@@ -1,0 +1,34 @@
+놀이공원 입장료 계산기
+
+나이(age)에 따라 입장료를 출력하는 프로그램입니다. 아래 조건에 맞게 else if 문을 사용하여 코드를 설계해 보세요.
+
+65세 이상: "무료"
+
+13세 이상 64세 이하: "10,000원"
+
+12세 이하: “5,000원”
+
+단, 나이는 100세이하 0세이상 값만 입력됩니다.
+
+#define _CRT_SECURE_NO_WARNINGS 
+#include <stdio.h>
+int main()
+{
+	int age = 0;
+	printf("나이를 입력하세요 :");
+	scanf("%d", &age);
+	if (age >= 65)
+	{
+		printf("무료입니다.");
+	}
+	else if (age<=12)
+	{
+		printf("5,000원 입니다.");
+	}
+	else
+	{
+		printf("10,000원 입니다.");
+	}
+	
+	return 0;
+}

@@ -1,0 +1,193 @@
+#!/usr/bin/env python3
+import rclpy
+from rclpy.node import Node
+from geometry_msgs.msg import Twist
+from sensor_msgs.msg import LaserScan
+import math
+
+class RightHandWallFollowerFSM(Node):
+    def __init__(self):
+        super().__init__('right_hand_wall_follower_fsm')
+
+        self.cmd_vel_pub = self.create_publisher(Twist, 'cmd_vel', 10)
+        lidar_qos = rclpy.qos.QoSProfile(
+            reliability=rclpy.qos.ReliabilityPolicy.BEST_EFFORT,
+            history=rclpy.qos.HistoryPolicy.KEEP_LAST,
+            depth=5
+        )
+        self.scan_sub = self.create_subscription(LaserScan, '/scan', self.scan_callback, lidar_qos)
+        self.timer = self.create_timer(0.1, self.control_loop)
+
+        self.scan_msg = None
+
+        # --- [🤖 FSM 상태 정의] ---
+        self.state = "WALL_FOLLOW"
+        self.state_timer = 0  # 1틱 = 0.1초 (상태 유지용 뚝심 카운터)
+
+        # --- [🔧 파라미터 및 마진 설정 (요청하신 0.2m / 0.1m 마진 반영)] ---
+        self.EMERGENCY_MIN = 0.05       # 본체 반사 방지 최소 마진 (5cm)
+        self.EMERGENCY_MAX = 0.20       # [요청 반영] 이동시간/딜레이 고려한 전방 비상 임계값 (20cm)
+        self.EMERGENCY_RELEASE = 0.35   # 비상 상황 해제 안전 기준선 (35cm)
+        
+        self.WALL_MIN_DIST = 0.13       # [요청 반영] 바퀴가 벽을 긁지 않는 절대 데드라인 (13cm)
+        self.WALL_MAX_DIST = 0.22       # 우측 벽 유지 최대 마진 (22cm)
+        self.WALL_TARGET_DIST = 0.17    # 우측 벽 정렬 목표 중심 거리 (17cm)
+        self.OPEN_SPACE_DIST = 0.35     # 탈출구 인식을 위한 개방 기준값 (35cm)
+        
+        self.MAX_LINEAR = 0.08          # 안전 직진 속도
+        self.MAX_ANGULAR = 0.40         # 안전 회전 속도
+
+        self.get_logger().info("원래 변수 가공 방식을 계승한 고신뢰도 FSM 우수법 노드가 시작되었습니다.")
+
+    def scan_callback(self, msg):
+        self.scan_msg = msg
+
+    def angle_to_index(self, angle_deg):
+        """각도를 LaserScan 인덱스로 변환"""
+        if not self.scan_msg:
+            return 0
+        angle_rad = math.radians(angle_deg)
+        idx = int((angle_rad - self.scan_msg.angle_min) / self.scan_msg.angle_increment)
+        idx = max(0, min(idx, len(self.scan_msg.ranges)-1))
+        return idx
+
+    def control_loop(self):
+        if not self.scan_msg:
+            return
+
+        twist = Twist()
+
+        # =========================================================================
+        # --- [1단계: 기존 코드 스타일의 ranges 포문 순회 및 인덱스 슬라이싱] ---
+        # =========================================================================
+        
+        # ① 정면 위험 영역 검사 (LDS-01 기준 315도 ~ 360도 및 0도 ~ 15도 결합 슬라이스)
+        front_dist = float('inf')
+        idx_315 = self.angle_to_index(315)
+        idx_15 = self.angle_to_index(15)
+        
+        # 315도 ~ 360도 구간 포문 검사
+        for i in range(idx_315, len(self.scan_msg.ranges)):
+            r = self.scan_msg.ranges[i]
+            if self.EMERGENCY_MIN < r < 3.5 and not math.isnan(r):
+                if r < front_dist: front_dist = r
+        # 0도 ~ 15도 구간 포문 검사
+        for i in range(0, idx_15 + 1):
+            r = self.scan_msg.ranges[i]
+            if self.EMERGENCY_MIN < r < 3.5 and not math.isnan(r):
+                if r < front_dist: front_dist = r
+
+        # ② 우전방 탈출구 판단 영역 검사 (300도 ~ 330도 슬라이스)
+        idx_300 = self.angle_to_index(300)
+        idx_330 = self.angle_to_index(330)
+        right_front_ranges = [self.scan_msg.ranges[i] for i in range(idx_300, idx_330 + 1)
+                              if self.EMERGENCY_MIN < self.scan_msg.ranges[i] < 3.5 and not math.isnan(self.scan_msg.ranges[i])]
+        right_front_dist = min(right_front_ranges) if right_front_ranges else float('inf')
+
+        # ③ 정우측 벽면 추적 영역 검사 (240도 ~ 270도 슬라이스)
+        idx_240 = self.angle_to_index(240)
+        idx_270 = self.angle_to_index(270)
+        right_side_ranges = [self.scan_msg.ranges[i] for i in range(idx_240, idx_270 + 1)
+                             if self.EMERGENCY_MIN < self.scan_msg.ranges[i] < 3.5 and not math.isnan(self.scan_msg.ranges[i])]
+        right_side_dist = min(right_side_ranges) if right_side_ranges else float('inf')
+
+        # 실시간 디버그 로그
+        self.get_logger().info(
+            f"[{self.state}] F:{front_dist:.2f}m | RF:{right_front_dist:.2f}m | RS:{right_side_dist:.2f}m",
+            throttle_duration_sec=0.5
+        )
+
+        # =========================================================================
+        # --- [2단계: 최상위 글로벌 비상 조건 (어떤 상태든 20cm 이내 접근 시 강제 발동)] ---
+        # =========================================================================
+        if front_dist < self.EMERGENCY_MAX and self.state != "EMERGENCY":
+            self.state = "EMERGENCY"
+            self.state_timer = 0
+            self.get_logger().warn("🚨 [EMERGENCY] 정면 장벽 20cm 이내 진입! 제자리 회피 기동 작동")
+
+        # =========================================================================
+        # --- [3단계: FSM 상태별 독립 제어 루프 (기억력 및 지속 주행성 보장)] ---
+        # =========================================================================
+        
+        # 🟢 STATE 1: WALL_FOLLOW (기본 우측 벽 추적 제어 모드)
+        if self.state == "WALL_FOLLOW":
+            twist.linear.x = self.MAX_LINEAR
+            error = right_side_dist - self.WALL_TARGET_DIST
+            
+            if right_side_dist < self.WALL_MIN_DIST:
+                twist.angular.z = self.MAX_ANGULAR * 0.6       # 13cm보다 가까워지면 안전하게 좌회전 이격
+            elif right_side_dist > self.WALL_MAX_DIST and right_side_dist <= self.OPEN_SPACE_DIST:
+                twist.angular.z = -self.MAX_ANGULAR * 0.6      # 멀어지면 우회전 밀착
+            else:
+                twist.angular.z = error * 1.5                  # 정상 타겟 범위 내 미세 P 제어 정렬
+
+            # [상태 전이 조건 트리거]
+            # 우전방이 개방값(35cm) 이상으로 시원하게 뚫렸다면 ➡️ 탈출구 회전 진입
+            if right_front_dist > self.OPEN_SPACE_DIST:
+                self.state = "EXIT_TURN"
+                self.state_timer = 0
+                self.get_logger().info("✨ [전이] 우전방 탈출구 감지 -> EXIT_TURN 상태 진입")
+            
+            # 우측 벽이 완전히 유실되었다면 ➡️ 일반 바깥 모퉁이 회전
+            elif right_side_dist > self.OPEN_SPACE_DIST:
+                self.state = "CORNER_TURN"
+                self.state_timer = 0
+                self.get_logger().info("🔄 [전이] 우측 코너 감지 -> CORNER_TURN 상태 진입")
+
+        # 🔵 STATE 2: EXIT_TURN (우전방 탈출구 진입 회전 모드)
+        elif self.state == "EXIT_TURN":
+            # 딜레이와 관성을 고려하여 문턱 기둥에 박지 않게 선속도를 넣어가며 부드럽게 감아 들어감
+            twist.linear.x = self.MAX_LINEAR * 0.8
+            twist.angular.z = -self.MAX_ANGULAR * 0.7
+            
+            self.state_timer += 1
+            # 최소 1.5초(15틱) 동안은 주변 데이터 요동을 무시하고 회전 유턴 기동에 충실
+            if self.state_timer >= 15:
+                # 회전 후 다시 우측에 벽(35cm 이내)이 리딩되기 시작하면 주행 복귀
+                if right_side_dist <= self.OPEN_SPACE_DIST or self.state_timer >= 30:
+                    self.state = "WALL_FOLLOW"
+                    self.state_timer = 0
+                    self.get_logger().info("✅ 탈출구 회전 기동 완수 -> 벽 추적 주행 복귀")
+
+        # 🟡 STATE 3: CORNER_TURN (바깥 직각 모퉁이 회전 모드)
+        elif self.state == "CORNER_TURN":
+            twist.linear.x = self.MAX_LINEAR * 0.7
+            twist.angular.z = -self.MAX_ANGULAR * 0.6
+            
+            self.state_timer += 1
+            # 최소 1.0초(10틱) 강제 모퉁이 회전 유지 후 우측 벽이 다시 시야에 걸릴 때 복귀
+            if self.state_timer >= 10 and right_side_dist <= self.OPEN_SPACE_DIST:
+                self.state = "WALL_FOLLOW"
+                self.state_timer = 0
+                self.get_logger().info("✅ 모퉁이 탈출 완료 -> 벽 추적 주행 복귀")
+
+        # 🔴 STATE 4: EMERGENCY (최우선 정면 충돌 회피 모드)
+        elif self.state == "EMERGENCY":
+            twist.linear.x = 0.0                       # 관성 밀림을 정지하기 위해 직진 속도는 제로 고정
+            twist.angular.z = self.MAX_ANGULAR * 0.8   # 신속하게 제자리 좌회전 제어
+            
+            self.state_timer += 1
+            # 제자리 좌회전 도중 정면 거리가 안전선(35cm) 이상 확보되면 다시 원 주행 모드로 안전하게 복귀
+            if front_dist > self.EMERGENCY_RELEASE and self.state_timer >= 5:
+                self.state = "WALL_FOLLOW"
+                self.state_timer = 0
+                self.get_logger().info("✅ 비상 상황 해제 (전방 시야 확보) -> 벽 추적 주행 복귀")
+
+        # 최종 제어 명령 퍼블리시
+        self.cmd_vel_pub.publish(twist)
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = RightHandWallFollowerFSM()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stop = Twist()
+        node.cmd_vel_pub.publish(stop)
+        node.destroy_node()
+        rclpy.shutdown()
+
+if __name__ == '__main__':
+    main()

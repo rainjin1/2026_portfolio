@@ -1,0 +1,29 @@
+#define _CRT_SECURE_NO_WARNINGS 
+#include <stdio.h>
+int main()
+{
+	char greet[12];
+	greet[0] = 'H';
+	greet[1] = 'E';
+	greet[2] = 'L';
+	greet[3] = 'L';
+	greet[4] = 'O';
+	greet[5] = ' ';
+	greet[6] = 'W';
+	greet[7] = 'O';
+	greet[8] = 'R';
+	greet[9] = 'L';
+	greet[10] = 'D';
+	greet[11] = '!';
+
+	for (int i = 0; i < 12; i++)
+	{
+		printf("%c", greet[i]); //문자를 하나하나 찍은거임.
+	}
+
+	printf("\n");
+
+	//문자열로 나타내기. 마지막에 반드시 널문자가 있어야함. 문자열의 끝을 특정하지를 못해서 더미값이 나옴.
+	printf("%s\n", greet);
+	return 0;
+}

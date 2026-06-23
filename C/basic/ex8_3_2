@@ -1,0 +1,13 @@
+#define _CRT_SECURE_NO_WARNINGS 
+#include <stdio.h>
+int main()
+{
+	int score[3] = { 90, 95, 100 }; // 배열의 선언과 동시에 초기화.
+
+	for (int i = 0; i < 3; i++)
+	{
+		printf("%d\n", score[i]);
+	}
+
+	return 0;
+}

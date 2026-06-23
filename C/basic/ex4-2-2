@@ -1,0 +1,15 @@
+//전위형 후위형 연산자 연습
+
+#define _CRT_SECURE_NO_WARNINGS 
+#include <stdio.h>
+int main()
+{
+	int a = 4, b = 5;
+	int pre, post;
+	pre = (--a) * 3;
+	post = (b--) * 3;
+	printf("초기값 a: %d, b: %d\n", a, b);
+	printf("전위형: %d, 후위형: %d\n", pre, post);
+
+	return 0;
+}

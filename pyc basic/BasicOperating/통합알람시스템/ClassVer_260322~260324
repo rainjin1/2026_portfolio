@@ -1,0 +1,419 @@
+from pop import delay, Switches, Cds, Sht20, Oled, Leds, Gesture, Psd, Potentiometer, PiezoBuzzer, Sound
+import time, random, threading
+
+class SmartAlarm:
+    def __init__(self):
+        # --- [1. 하드웨어 장치 초기화: Sensors & Inputs] ---
+        self.sw = Switches()           # 스위치: sw[0], sw[1] 사용 / 눌림 감지 시 'not sw[n].read()' 사용
+        self.cds = Cds()               # 조도센서: 밝기 측정 (밝으면 ~3300, 어두우면 ~400)
+        self.psd = Psd()               # 적외선 거리센서: 8~60cm 범위 (readAverage 후 calDist 사용)
+        self.sht = Sht20()             # 온습도센서: sht.readTemp(), sht.readHumi()로 온도/습도 획득
+        self.pot = Potentiometer()     # 가변저항: pot.readAverage() 사용 (정밀도 향상, 0~10 범위 위주)
+        self.gst = Gesture()           # 제스처센서: gst.isAvailable() 확인 후 gst.readStr()로 방향 인식
+        self.snd = Sound()             # 사운드센서: 소음 측정 (박수 소리 등 큰 소리는 약 2100 이상)
+        
+        # --- [출력 장치 설정: Actuators & Display] ---
+        self.led = Leds()              # LED 모듈: led[0~7] 개별 제어 및 led.allOn() / allOff() 지원
+        self.display = Oled()          # OLED 디스플레이: 128x64 해상도 (반드시 oled.display()로 갱신)
+        self.buz = PiezoBuzzer()       # 피에조 부저: buz.play((옥타브, 음번호, 박자),) 튜플 형태 사용
+
+        # --- [시스템 초기 구동 변수들] ---
+        self.display.init()            # OLED 초기화 (사용 전 필수)
+        self.display.clearDisplay()    # 화면 잔상 제거
+        self.display.setTextSize(s=1)  # 기본 텍스트 사이즈
+        
+        self.minute_set = 0            # 분 세팅
+        self.second_set = 0            # 초 세팅
+        self.mode = 0                  # 모드의 디폴트는 분세팅 (0: 분, 1: 초)]
+        self.led.allOff()              # 초기 led 전체 off세팅
+        
+        self.music_on = False          # 3단계 알람음 출력을 담당할 변수
+        self.alarm_on = False          # 4단계 버튼체크, 제스처센서를 가동할 변수
+        self.check_buttons_running = False # 4단계에서 체크버튼을 위해 트루로 바꿔줄 변수
+        self.success = False           # 4단계를 총괄하는 변수 (성공 여부)
+        
+        self.distance = 30             # 비밀번호 입력 시 거리 설정 초기값
+        
+        self.snooze_count = 0          # snooze(5분 미루기)카운트. 최대 3회까지 미루기 가능
+        self.sound_detected = False    # 소리 인식 False상태 초기값
+        self.sound_threshold = 2100    # 알람을 완전히 끄려면 소리를 2100이상 질러서 인식시켜야함.
+        self.ges_step = 0              # led guide 제어를 위한 초기값
+        
+        self.pw = [0, 0, 0, 0]         # 비밀번호 입력값 저장용 리스트
+        self.pw_idx = 0                # 현재 수정 중인 칸의 번호
+        self.password = 0              # 랜덤하게 생성될 정답 비밀번호
+        self.five_mins = 300           # 가독성을 위해 추가한 5분(초 단위) 변수
+
+    # --- [2. UI 및 타이머 메서드] ---
+    def draw_setup_ui(self):
+        """1단계에서 타이머 세팅 UI를 그리는 함수"""
+        # 화면 전체 초기화 및 고정 텍스트 배치
+        self.display.clearDisplay()
+        self.display.setTextSize(s=1)
+        self.display.setCursor(0, 0)   # 0,0에 버튼 용도 알리기
+        self.display.print("SW1: += 1, SW2: next")
+        self.display.setCursor(30, 30) # 30, 30좌표에 타임세팅 알리기
+        self.display.print("Time Setting")
+        
+        # 현재 모드(분/초)에 따라 동적으로 라벨링 변경
+        # 모드에 따라 25, 40 좌표에 세팅하는 분, 초 알리기
+        label = "Minute Setting" if self.mode == 0 else "Second Setting"
+        self.display.setCursor(25, 40)
+        self.display.print(label)
+        
+        # 현재 설정된 분/초를 00:00 형식으로 실시간 출력
+        self.display.setCursor(40, 50) # 40, 50좌표에 현재 세팅된 시간 띄우기 (00:00 형식)
+        self.display.print(f'{self.minute_set:02d} : {self.second_set:02d}')
+        self.display.display()
+
+    def run_timer(self, seconds):
+        """2단계의 타이머 함수. 제스처를 통해 5분 후 다시울릴때 재사용"""
+        # 현재 시간 + 설정 시간을 더해 목표 시점 계산
+        target_time = time.time() + seconds # 목표 시간 설정
+        while True:
+            # 남은 시간을 계산하여 분:초 단위로 변환
+            remain = target_time - time.time()
+            min_remain = int(remain // 60)
+            sec_remain = int(remain % 60)
+            
+            # OLED를 0.5초마다 갱신하며 현재 남은 시간 브리핑
+            self.display.clearDisplay()
+            self.display.setTextSize(s=2)
+            self.display.setCursor(40, 20)
+            self.display.print("TIMER")
+            self.display.setCursor(25, 40)
+            self.display.print(f'{min_remain:02d} : {sec_remain:02d}')
+            self.display.display()
+            
+            delay(500)
+            # 목표 시점에 도달하면(남은 시간이 1초 미만) 루프 종료
+            if remain < 1:
+                break
+
+    # --- [3. 스레드 전용 메서드 (Tasks)] ---
+    def alert_task(self):
+        """3단계에서 알람음 출력. music_on 변수로 제어""" #캐논변주곡의 메인 멜로디를 약간 변형
+        # (옥타브, 음번호, 박자) 튜플 형태의 음표 데이터
+        notes = (
+            (3, 8, 4), (3, 5, 8),(3, 6, 8), (3, 8, 4), (3, 5, 8),(3, 6, 8),
+            (3, 8, 8), (2, 8, 8),(2, 10, 8),(2, 12, 8),(3, 1, 8),(3, 3, 8),(3, 5, 8),(3, 6, 8),
+            (3, 5, 4), (3, 1, 8), (3, 3, 8), (3, 5, 4), (2, 5, 8), (2, 6, 8),
+            (2, 8, 8), (2, 10, 8), (2, 8, 8), (2, 6, 8), (2, 8, 8), (3, 1, 8), (2, 12, 8), (3, 1, 8),
+            (2, 10, 4), (3, 1, 8), (2, 12, 8), (2, 10, 4), (2, 8, 8), (2, 6, 8),
+            (2, 8, 8), (2, 6, 8), (2, 5, 8), (2, 6, 8), (2, 8, 8), (2, 10, 8), (2, 12, 8), (3, 1, 8),
+            (2, 10, 4), (3, 1, 8), (2, 12, 8), (3, 1, 4), (2, 12, 8), (3, 1, 8),
+            (2, 12, 8), (3, 1, 8), (3, 3, 8), (3, 1, 8), (3, 3, 8), (3, 5, 8), (3, 6, 8), (3, 8, 8),
+        )
+        # music_on 플래그가 True인 동안 무한 반복 연주
+        while self.music_on:
+            for n in notes:
+                # 연주 도중이라도 정지 신호가 오면 즉시 중단
+                if not self.music_on:
+                    break
+                self.buz.tone(n[0], n[1], n[2])
+                delay(100)
+
+    def check_buttons_task(self):
+        """4단계에서 비밀번호 입력을 받기위한 스레딩함수"""
+        # 알람이 켜져 있고, 입력 진행 중인 동안 스위치 감시
+        while self.alarm_on:
+            if not self.check_buttons_running:
+                delay(200)
+                continue
+            try:
+                distance_value = self.psd.readAverage() # 거리의 평균값을 읽어와서
+                calculated = self.psd.calcDist(distance_value) # 알아보기쉬운 cm형으로 변환. 이건 화면표시에서 사용해야해서, 전역으로 저장.
+                if calculated is not None:
+                    self.distance = calculated
+            except Exception as e:
+                print(f"PSD Sensor Error: {e}")
+                self.distance = 30
+            if 10 <= self.distance <= 60:
+                # 0번 스위치: 현재 가리키는 자릿수의 숫자를 0~9 사이에서 순환 증가
+                if not self.sw[0].read(): # 0번 스위치: 숫자 증가
+                    if self.pw_idx < 4:
+                        self.pw[self.pw_idx] = (self.pw[self.pw_idx] + 1) % 10
+                    delay(100)
+
+                # 1번 스위치: 다음 자릿수로 이동하거나, 마지막 자릿수면 입력 완료 처리
+                if not self.sw[1].read(): # 1번 스위치: 다음 칸 이동 또는 입력 완료
+                    if self.pw_idx < 3:
+                        self.pw_idx += 1
+                        delay(100)
+                    else:
+                        self.check_buttons_running = False # 모든 자리 입력 완료 신호
+                        delay(100)
+            delay(200)
+
+    def snooze_gesture_task(self):
+        """4단계에서 제스처 입력을 통한 타이머 5분 추가를 위한 스레딩 함수"""
+        self.ges_step = 0 # 2단계 인증을 위한 단계 변수 (0: 대기, 1: 왼쪽 성공)
+        while self.alarm_on:
+            if self.snooze_count >= 3:
+                print("Snooze limit reached. Gesture disabled.")
+                break
+            if self.gst.isAvailable():
+                gesture = self.gst.readStr()
+                # 1단계: 왼쪽 제스처 인식 시 7, 5번 LED 점등
+                if gesture == "Left":
+                    self.ges_step = 1
+                    print("Left gesture detected")
+                # 2단계: 왼쪽 이후 오른쪽 제스처 인식 시 스누즈 카운트 증가 및 알람 일시정지
+                elif gesture == "Right" and self.ges_step == 1:
+                    print("Right gesture detected. Alarm snooze check")
+                    self.snooze_count += 1
+                    self.check_buttons_running = False
+                    self.music_on = False
+                    self.alarm_on = False # 알람을 끄고 메인 루프에서 스누즈 판정 유도
+                    break
+            delay(10)
+            
+    def led_guide_task(self):
+            """제스처 유도를 위해 LED를 순차적으로 파도타기 시키는 스레드"""
+            while self.alarm_on:
+                # 3회 이상이면 가이드 종료 (스누즈 불가 상태)
+                if self.snooze_count >= 3:
+                    print("Snooze limit reached. led guide disabled.")
+                    self.led.allOff() # 혹시 켜져 있을지 모를 LED 정리
+                    break
+
+                # 0단계: 왼쪽으로 가라는 신호 (0번 -> 7번 순서)
+                if self.ges_step == 0:
+                    for i in range(8):
+                        # 도중에 상태가 변하면 즉시 중단
+                        if self.ges_step != 0 or not self.alarm_on: 
+                            break
+                        self.led[i].on()
+                        delay(100)
+                        self.led[i].off()
+
+                # 1단계: 오른쪽으로 가라는 신호 (7번 -> 0번 순서)
+                elif self.ges_step == 1:
+                    for i in range(7, -1, -1):
+                        # 도중에 상태가 변하면 즉시 중단
+                        if self.ges_step != 1 or not self.alarm_on: 
+                            break
+                        self.led[i].on()
+                        delay(100)
+                        self.led[i].off()
+
+                delay(50) # CPU 부하 방지
+            self.led.allOff()
+            print("led guide thread terminated.")
+                
+    # --- [4. 핵심 실행 단계들] ---
+    def setup_phase(self):
+        """1단계. 타이머 세팅 루프"""
+        # 처음 진입 시 UI 한 번 출력
+        self.draw_setup_ui()
+        while True:
+            # 스위치 0번: 현재 모드에 따라 분 또는 초를 증가시킴
+            if not self.sw[0].read():
+                if self.mode == 0: 
+                    self.minute_set = (self.minute_set + 1) % 60
+                else: 
+                    self.second_set = (self.second_set + 1) % 60
+                self.draw_setup_ui() # 값 변경 시 화면 갱신
+                delay(50)
+            # 스위치 1번: 모드를 전환 (분 -> 초 -> 설정 완료)
+            if not self.sw[1].read():
+                self.mode += 1
+                # 2단계 모드가 되면 설정이 끝난 것으로 간주하고 루프 탈출
+                if self.mode == 2: 
+                    self.display.clearDisplay()
+                    break
+                self.draw_setup_ui()
+                delay(50)
+
+    def alarm_loop_phase(self):
+        """메인 알람 반복 루프 (3단계 & 4단계 포함)"""
+        while True:
+            # --- 3단계. 알람 시작 준비 ---
+            # 알람 시작 시각화 및 변수 초기화
+            self.display.clearDisplay()
+            self.display.setCursor(30, 20)
+            self.display.print("ALARM")
+            self.display.setCursor(30, 35)
+            self.display.print("START")
+            self.display.display()
+            delay(1500)
+            
+            # 알람 및 각종 감시용 스레드 가동을 위한 상태 설정
+            self.music_on = True
+            self.alarm_on = True
+            self.check_buttons_running = True
+            self.success = False
+            self.pw = [0, 0, 0, 0]
+            self.pw_idx = 0
+            # 매 판마다 새로운 4자리 정답 비밀번호 생성
+            self.password = random.randint(1000, 9999)
+
+            # 소리, 버튼, 제스처 감시 스레드를 비동기로 실행
+            threading.Thread(target=self.alert_task, daemon=True).start()
+            threading.Thread(target=self.check_buttons_task, daemon=True).start()
+            if self.snooze_count < 3:
+                threading.Thread(target=self.led_guide_task, daemon=True).start()
+            if self.snooze_count < 3:
+                threading.Thread(target=self.snooze_gesture_task, daemon=True).start() # 스누즈 카운트가 3 미만일때만 스누즈 스레드 실행.
+            else:
+                print("No more snooze") # 디버깅용 출력문
+
+            # --- 4단계. 비밀번호 확인 ---
+            # 사용자가 비밀번호를 맞추거나 스누즈를 발동할 때까지 반복
+            while self.alarm_on:
+                time.sleep(0.1)
+                # 버튼 입력 스레드에서 입력 완료 신호(SW2 4번 클릭)를 보낸 경우
+                if not self.check_buttons_running:
+                    # 4자리를 조합하여 정수형 비밀번호 생성
+                    user_pw = self.pw[0]*1000 + self.pw[1]*100 + self.pw[2]*10 + self.pw[3]
+                    # 정답 확인
+                    if user_pw == self.password:
+                        print("pw correct")
+                        self.success = True # 성공 신호
+                        self.alarm_on = False # 알람 루프 종료
+                        self.display.clearDisplay()
+                        self.display.setCursor(35, 30)
+                        self.display.print("SUCCESS!")
+                        self.display.display()
+                        delay(3000)
+                        break
+                    else:
+                        # 오답 시 초기화 후 재입력 대기
+                        self.display.clearDisplay()
+                        self.display.setCursor(10, 30)
+                        self.display.print("pw wrong! restart..")
+                        self.display.display()
+                        self.pw = [0, 0, 0, 0]
+                        self.pw_idx = 0
+                        self.check_buttons_running = True
+                        delay(2000)
+
+                # OLED 점멸 로직: 정답 비밀번호를 화면 여기저기 랜덤하게 뿌려줌
+                rx = random.randint(0, 104)
+                ry = random.randint(0, 56)
+                # 하단 입력 UI와 겹치지 않게 가드 처리
+                if ry > 48 and (20 < rx < 100):
+                    continue
+                
+                # 실시간 입력 정보 및 가이드 화면 출력
+                self.display.clearDisplay()
+                self.display.setTextSize(s=1)
+                if self.distance < 10:
+                    self.display.setTextSize(s=2)
+                    self.display.setCursor(0, 20)
+                    self.display.print("TOO CLOSE")
+                    self.display.display()
+                    time.sleep(0.01)
+                elif self.distance > 60:
+                    self.display.setTextSize(s=2)
+                    self.display.setCursor(0, 20)
+                    self.display.print("TOO FAR")
+                    self.display.display()
+                    time.sleep(0.01)
+                else:
+                    self.display.setTextSize(s=1)
+                    self.display.setCursor(0, 0)
+                    self.display.print("SW1: += 1, SW2: next")
+                    self.display.setCursor(15, 8)
+                    safe_idx = min(self.pw_idx + 1, 4) # 인덱스 범위 초과 방지
+                    self.display.print(f"now on {safe_idx}word")
+                    self.display.setCursor(rx, ry)
+                    self.display.print(f"{self.password}") # 랜덤 위치에 정답 노출
+                    self.display.setCursor(40, 56)
+                    self.display.print(f"pw: {''.join(map(str, self.pw))}") # 현재까지 입력한 값
+                    self.display.display()
+                    delay(500)
+
+            # 성공적으로 비밀번호를 맞췄다면 메인 루프 탈출하여 5단계로 이동
+            if self.success:
+                break
+            
+            # --- 알람 루프 종료 후 스누즈 판정 ---
+            # 제스처 센서에 의해 루프가 깨졌을 경우 (스누즈 3회 제한)
+            if 0 < self.snooze_count <= 3:
+                self.led.allOff()
+                self.music_on = False
+                self.alarm_on = False
+                self.check_buttons_running = False
+                self.display.clearDisplay()
+                self.display.setCursor(10, 30)
+                self.display.print(f"Snooze {self.snooze_count}: 5min")
+                self.display.display()
+                delay(2000)
+                # 5분(300초) 타이머 가동 후 다시 위로 올라가 알람 재개
+                self.run_timer(self.five_mins)
+            else:
+                # 3회 초과 시 스누즈 무시하고 바로 알람 강제 재개
+                continue
+
+    def final_shout_phase(self):
+        """5단계. 소리인식으로 알람 최종 종료"""
+        # 알람음 정지를 위한 최종 미션 고지
+        self.display.clearDisplay()
+        self.display.setCursor(0, 20)
+        self.display.print("Shout to Stop!")
+        self.display.display()
+        # 설정한 소리 임계값(2100)을 넘길 때까지 무한 대기
+        while not self.sound_detected:
+            sound_value = self.snd.read()
+            if sound_value > self.sound_threshold:
+                print(f"Sound Detected : {sound_value}")
+                self.music_on = False # 최종적으로 소리 끄기
+                self.sound_detected = True
+            delay(50)
+        
+        # 기상 확인 및 환영 메시지 출력
+        self.display.clearDisplay()
+        self.display.setCursor(40, 20)
+        self.display.setTextSize(s=2) # 강조를 위해 텍스트 크게
+        self.display.print("GOOD")
+        self.display.setCursor(20, 40)
+        self.display.print("MORNING!")
+        self.display.display()
+        self.display.setTextSize(s=1)
+        delay(3000)
+
+    def show_info(self):
+        """6단계. 온습도 출력 및 마무리"""
+        # 텍스트 크기 원복 및 오늘 날짜/온도/습도 데이터 획득 후 브리핑
+        self.display.setTextSize(s=1)
+        self.display.clearDisplay()
+        temp = self.sht.readTemp()
+        humi = self.sht.readHumi()
+        date_str = time.strftime("%Y.%m.%d")
+        # 최종 정보 화면 구성
+        self.display.setCursor(0, 0)
+        self.display.print(f"Today is {date_str}")
+        self.display.setCursor(0, 20)
+        self.display.print(f"Temperature : {temp:.2f}C")
+        self.display.setCursor(0, 35)
+        self.display.print(f"Humidity : {humi:.2f}%")
+        self.display.setCursor(0, 50)
+        self.display.print("Have a nice day!")
+        self.display.display()
+
+    def booting_sound(self):
+        booting_count = 0
+        booting_notes = ((3, 8, 4), (3, 3, 8), (3, 1, 4), (3, 8, 8), (3, 3, 4),)
+        while booting_count == 0 :
+            for n in booting_notes:
+                self.buz.tone(n[0], n[1], n[2])
+                delay(100)
+            booting_count += 1
+        
+    def start(self):
+        """메인 실행 프로세스 제어"""
+        # 프로그램 시작 알림 및 순차적 단계 실행
+        print("started")
+        self.setup_phase() # 1단계: 시간 세팅
+        # 세팅된 시간을 초 단위로 합산하여 타이머 구동
+        self.run_timer(self.minute_set * 60 + self.second_set) # 2단계: 대기
+        self.alarm_loop_phase() # 3, 4단계: 알람 및 비밀번호/제스처 루프
+        self.final_shout_phase() # 5단계: 소리 질러서 마무리
+        self.show_info() # 6단계: 온습도 브리핑
+        self.booting_sound()
+
+# --- 프로그램 실제 구동 시작점 ---
+if __name__ == "__main__":
+    alarm = SmartAlarm() # 객체 생성 (하드웨어 초기화)
+    alarm.start()        # 알람 시스템 가동

@@ -1,0 +1,35 @@
+#include <stdio.h>
+#include <string.h>
+struct person
+{
+    int id;
+    char name[20]; // char *name
+    int age;
+    char tel[20]; // char *tel
+};
+
+int main()
+{
+    struct person list[2] = {
+        {1, "Kim", 30, "010-2313-4493"}, {2, "Park", 31, "300-2333-3133"}
+    };
+    for (int i = 0; i < 2; i++)
+    {
+       printf("%d \t %10s \t %d \t %10s", list[i].id, list[i].name, list[i].age, list[i].tel);
+       printf("\n");
+    }
+    struct person *p = list;
+printf("\n\n");
+for (int i = 0; i < 2; i++)
+{
+    printf("%d \t %10s \t %d \t %10s\n",
+           p->id,
+           p->name,
+           p->age,
+           p->tel);
+    p++;   // 다음 구조체로 이동
+}
+    
+    return 0;
+}
+//여기서 이제 char *name, *tel로 하면 어때야하나.

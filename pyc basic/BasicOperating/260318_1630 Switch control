@@ -1,0 +1,24 @@
+#스위치를 누르면 led불이 양 가장자리에서 순차적으로 들어왔다가 꺼지는 코드.
+
+from pop import Switches, Leds, delay
+switch = Switches()
+led = Leds()
+is_pressed = False
+led.allOff()
+wave = [0, 1, 2, 3]
+while True:
+    btn_state1 = switch[0].read()
+    if not btn_state1:
+        is_pressed = True
+    if not btn_state1 and is_pressed is True:
+        for i in wave:
+            led[i].on()
+            led[7-i].on()
+            delay(100)
+        for i in wave:
+            led[3-i].off()
+            led[4+i].off()
+            delay(100)
+        is_pressed = False
+    elif btn_state1 is True:
+        is_pressed = True

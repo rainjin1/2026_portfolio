@@ -1,0 +1,130 @@
+import random
+
+# 자동 번호 생성기.
+def auto_number_maker(number_of_bought_lotto: int): # 구매한 자동로또의 숫자를 매개변수로 받음.
+    auto_ball_pool = [i for i in range(1, 46, 1)] # 먼저 볼풀을 45개의 숫자로 채움
+    auto_picked_numbers = {} # 뽑힌 번호를 저장할 딕셔너리
+    for i in range(number_of_bought_lotto): #딕셔너리에 구매한 수량만큼의 키값을 미리 넣어둠
+        auto_picked_numbers[i] = []
+    for auto_lottos in range(number_of_bought_lotto): # 구매한 숫자만큼 돌릴 자동뽑기를 돌릴예정
+        for num in range(1, 7):
+            random.shuffle(auto_ball_pool) # 공을 뽑기전에 랜덤으로 돌림 (하나가 제거된 경우에도 바로 뽑지 않고 랜덤으로 또 돌림)
+            auto_picked_numbers[auto_lottos].append(auto_ball_pool[0]) # 랜덤으로 돌린 풀에서 첫번째 공을 가져와서 번호저장 딕셔너리에 추가
+            del auto_ball_pool[0] # 뽑은 첫 공을 제거
+        auto_ball_pool = [i for i in range(1, 46, 1)] #한싸이클 돌아서 공이 6개 빠졌으니, 다음 의 로또를 뽑기 전에 리스트를 다시 선언
+    return auto_picked_numbers # 자동으로 추출된 번호를 담은 딕셔너리를 반환
+
+# 고객이 직접 번호 선정
+def pick_number(user_choice_quantity_of_buy: int): #구매수량을 매개변수로 받음.
+    user_picked_numbers = {} #유저가 고른 번호들을 저장할 딕셔너리
+    for i in range(user_choice_quantity_of_buy): #딕셔너리에 구매한 수량만큼의 키값을 미리 넣어둠.
+        user_picked_numbers[i] = []
+    for number in range(user_choice_quantity_of_buy): #구매수량만큼 반복
+        char_bought_lotto = input("1~45까지의 숫자 6개를 ,로 구분해서 공백없이 넣어주세요 : ") # 숫자입력받아서
+        char_bought_lotto_list = char_bought_lotto.replace(" ","").split(",") # 띄어쓰기와 콤마 제거해서 순수 숫자만 문자열로 필터링
+        int_bought_lotto = list(map(int, char_bought_lotto_list)) # 문자열을 숫자로 변환해서 리스트에 넣음
+        user_picked_numbers[number] = int_bought_lotto #유저가 고른 번호들을 딕셔너리에 저장
+    return user_picked_numbers #유저가 고른 번호들이 들어있는 딕셔너리를 반환
+    # 내가 산 번호를 확인하고싶다면
+    # print(int_bought_lotto)
+
+
+# 자동확인시스템
+def checking_numbers(picked_numbers: list[int], winning_numbers: list[int], bonus_number: int): # 직접 찍은 번호 리스트, 당첨번호 리스트, 보너스번호를 매개변수로받음
+    won_numbers = 0 # 일치번호 숫자 카운팅
+    bonus_number_corrected: bool = False #보너스번호 일치유무
+    for number in picked_numbers: # 내가 고른 번호를 하나씩 가져와서
+        if number in winning_numbers: # 당첨번호와 하나씩 대조
+            won_numbers += 1 # 당첨할 시, 당첨번호 카운트 + 1
+        if number == bonus_number:
+            bonus_number_corrected = True
+    if won_numbers == 6:
+        print("Congratulations! You won the lotto!")
+    if won_numbers == 5 and bonus_number_corrected:
+        print("Congratulations! You won 2nd place!")
+    if won_numbers == 5 and bonus_number_corrected==False:
+        print("Congratulations! You won 3rd place!")
+    if won_numbers == 4:
+        print("Congratulations! You won 4th place!")
+    if won_numbers == 3:
+        print("Congratulations! You won 5th place!")
+    if won_numbers < 3:
+        print("I'm sorry you lost.....")
+
+how_many_cycle = input("반복할 횟수를 입력해 주세요. (양의 정수만 입력 가능) : ") # 반복횟수 돌릴 번호 받기
+number_of_cycle = int(how_many_cycle) # 받은 문자열을 정수로 변환
+ball_pool = [balls for balls in range(1, 46, 1)] # 1부터 46전까지(45까지) 리스트생성
+total_counts = {} # 나온 결과를 저장할 딕셔너리. 이 딕셔너리가 결과를 전부 가지고있을 예정. 그래프 만드는데도 사용.
+bonus_ball_counts = {} # 보너스번호를 저장할 딕셔너리. 보너스번호만 따로저장.
+for i in range (1, 46, 1):
+    total_counts[i] = 0 # 딕셔너리 생성 1: 0, 2:0 이런식으로 생성. 1부터 46전까지(45까지)
+    bonus_ball_counts[i] = 0
+Dic_Lottocount = {}
+for i in range(1, number_of_cycle + 1): #Cyclenumber번반복
+    Dic_Lottocount[i] = [] #로또 결과 Cyclenumber번을 저장할 딕셔너리.
+for number in range (1, number_of_cycle + 1): #입력한 숫자만큼 반복
+    random.shuffle(ball_pool) #셔플 리스트의 순서를 마구잡이로
+    for num in range(1, 8): # 6개의 숫자+보너스번호를 뽑아야하니 1부터 8전까지
+        if num == 7:
+            Dic_Lottocount[number].append(ball_pool[0])  # 랜덤을 돌린 리스트의 첫번째 값(첫번째 공)을 일단 보너스에 저장.(확인필요할때를 대비해)저장.
+            bonus_ball_counts[ball_pool[0]] +=1
+        else:
+            Dic_Lottocount[number].append(ball_pool[0]) #랜덤을 돌린 리스트의 첫번째 값(첫번째 공)을 6개짜리 딕셔너리에(확인필요할때를 대비해)저장.
+            total_counts[ball_pool[0]] +=1 #파이널 로또카운트, 1~45 중 나온 값의 키에 횟수 1추가 - Cyclenumber숫자만큼 돌린 결과 전체를 저장.
+        del ball_pool[0] #뽑았으니까 공 삭제 - 45개일때의 확률과 44개, 43개의 확률이 다르니 제거해주기.
+    ball_pool = [balls for balls in range(1, 46, 1)] #공을 5개 삭제했으니, 다시 리스트를 선언해서 초기화
+# list_counter = list(total_counts.items())
+#5개씩 뽑힌 CycleNumber개의 리스트를 보고싶다면
+#print(Dic_Lottocount)
+
+#많이 뽑힌 숫자 순서대로 정렬한것을 보고싶다면
+#print(sorted(Dic_FinalLottocount.items(), key=lambda x: x[1], reverse = True))
+
+top_5_numbers = sorted(total_counts.items(), key=lambda x: x[1], reverse = True)[:6] #그중 탑 5개만 가져오기 // 중복이 있을시 뭘 가져오는지는 아직 계산되지 않음.
+bonus_number_list = sorted(bonus_ball_counts.items(), key=lambda x: x[1], reverse = True)
+bonus_number = bonus_number_list[0][0]
+Congratulations = [item[0] for item in top_5_numbers]
+
+# 최종 결과를 출력하려면
+print(f"{Congratulations} + {bonus_number}")
+#로또 번호 결과 시각화
+max_value = max(total_counts.values())
+Graph_Dic_FinalLottocount = {}
+for key, value in total_counts.items():
+    star_count = int((value/max_value)*5)
+    Graph_Dic_FinalLottocount[key] = "*" * star_count
+for key, value in Graph_Dic_FinalLottocount.items():
+    print(f"{key}: {value}", end="\n")
+
+
+final_bought_bundle = {}
+
+print("수동을 원하신다면 1, 자동을 원하신다면 2 를 입력해주세요 : ")
+user_choice_autoorpick = int(input())
+print("구매할 장수를 입력해주세요 : ")
+user_choice_quantity_of_buy = int(input())
+print(f"금액은 {user_choice_quantity_of_buy*5000}원 입니다. 금액을 투입해 주세요 : ")
+inserted_money = int(input())
+paid_successfully = False
+while not paid_successfully :
+    if inserted_money == user_choice_quantity_of_buy*5000:
+        paid_successfully = True
+        if user_choice_autoorpick == 1:
+            print("번호입력시작")
+            final_bought_bundle = pick_number(user_choice_quantity_of_buy)
+        if user_choice_autoorpick == 2:
+            print("자동 번호 선정중...")
+            final_bought_bundle = auto_number_maker(user_choice_quantity_of_buy)
+    elif inserted_money < user_choice_quantity_of_buy*5000:
+        print(f"금액이 {(user_choice_quantity_of_buy*5000)-inserted_money}원 만큼 부족합니다. 부족한 금액을 투입해주세요 : ")
+        inserted_money += int(input())
+        continue
+    else:
+        print(f"금액이 초과되었습니다. {inserted_money-(user_choice_quantity_of_buy*5000)}원을 반납합니다.")
+        inserted_money = user_choice_quantity_of_buy*5000
+        continue
+
+
+
+
+# checking_numbers(int_bought_lotto, Congratulations, bonus_number) # 직접 찍은 번호 리스트, 당첨번호 리스트, 보너스번호를 매개변수로전달

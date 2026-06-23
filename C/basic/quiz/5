@@ -1,0 +1,46 @@
+if문 사용  /  홀짝수 % ←- 나머지 연산자 판별 가능?
+
+5 / 3 -→ 몫 : 1
+
+5 % 3  -→ 나머지 :  2 
+
+
+
+Number : 7
+
+홀수
+
+
+
+Number : 12
+
+짝수
+
+
+#define _CRT_SECURE_NO_WARNINGS 
+#include <stdio.h>
+int main()
+{
+	int a, b;
+	printf("수를 입력하세요: ");
+	scanf("%d", &a);
+	printf("나누기를 실행 할 수를 입력하세요: ");
+	scanf("%d", &b);
+	int Q = a / b;
+	int R = a - b * Q;
+
+
+
+
+	printf("몫은 %d, 나머지는 %d 입니다.", Q, R);
+
+	if (a / 2 * 2 == a)
+	{
+		printf("짝수입니다.");
+	}
+	else
+	{
+		printf("홀수입니다.");
+	}
+	return 0;
+}
