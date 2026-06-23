@@ -114,13 +114,13 @@ class WallCoveragePlanner:
         occ[:, [0, -1]] = 1
         self.occ_raw = occ.copy()
 
-        # 외곽 갭 보정 → 내부/외부 분리
-        occ_closed = self._close_wall_gaps(occ)
+        # 큰 커널로 외벽 갭 보정 (외벽이 완전히 닫혀야 내부 추출 가능)
+        occ_closed = self._close_wall_gaps(occ, max_gap_m=0.50)
         self.occ   = occ_closed
 
-        # 외부 flood fill → 건물 내부 자유공간 추출
-        free_closed        = (occ_closed == 0).astype(np.uint8)
-        self.interior_free = self._flood_exterior(free_closed)
+        # 외벽 컨투어 내부 채우기 → 건물 내부 자유공간 추출
+        # (외부 flood fill 대신 — 갭 크기와 무관하게 작동)
+        self.interior_free = self._fill_building_interior(occ_closed, occ)
 
         # 거리 변환 (interior_free 기준)
         self.dist = cv2.distanceTransform(self.interior_free, cv2.DIST_L2, 5)
@@ -128,36 +128,48 @@ class WallCoveragePlanner:
     # =========================================================================
     # 1-1. 외곽 갭 보정 (점유 마스크 기준 모폴로지 닫힘)
     # =========================================================================
-    def _close_wall_gaps(self, occ: np.ndarray, max_gap_m: float = 0.20) -> np.ndarray:
+    def _close_wall_gaps(self, occ: np.ndarray, max_gap_m: float = 0.50) -> np.ndarray:
+        """
+        max_gap_m 이하의 벽 갭을 모폴로지 닫힘으로 브리징.
+        기본 0.50m — 외벽이 완전히 닫혀야 내부 채우기가 정확해짐.
+        """
         k      = max(3, int(max_gap_m / self.res))
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
         return cv2.morphologyEx(occ, cv2.MORPH_CLOSE, kernel)
 
     # =========================================================================
-    # 1-2. 외부 flood fill — 가장자리에서 시작해 외부 자유공간 제거
+    # 1-2. 외벽 컨투어 내부 채우기 → 건물 내부 자유공간 추출
     # =========================================================================
-    def _flood_exterior(self, free_mask: np.ndarray) -> np.ndarray:
+    def _fill_building_interior(
+        self, occ_closed: np.ndarray, occ_raw: np.ndarray
+    ) -> np.ndarray:
         """
-        맵 가장자리 4면의 자유공간 픽셀에서 flood fill(값=2).
-        연결된 자유공간 = 건물 외부.
-        남은 자유공간(값=1) = 건물 내부.
+        외벽 컨투어 내부를 채워 건물 전체 내부 영역을 구한 뒤,
+        원본 점유 픽셀(occ_raw)을 제외하면 내부 자유공간이 남음.
+
+        외부 flood fill 대신 이 방법을 쓰면 갭 크기와 무관하게 안정적으로 동작.
+
+        알고리즘:
+          1. occ_closed의 가장 큰 연결 성분 = 외벽 덩어리
+          2. 그 외부 컨투어를 FILLED로 채움 → building_mask (내부 + 벽 포함)
+          3. building_mask & ~occ_raw = 내부 자유공간
         """
-        h, w    = free_mask.shape
-        tmp     = free_mask.copy()
-        ff_mask = np.zeros((h + 2, w + 2), np.uint8)
+        # 가장 큰 연결 성분 (외벽)
+        n, labels, stats, _ = cv2.connectedComponentsWithStats(occ_closed, 8)
+        if n <= 1:
+            raise RuntimeError("점유 영역 없음 — PGM 확인 필요")
+        idx        = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+        outer_mask = (labels == idx).astype(np.uint8)
 
-        for x in range(w):
-            if tmp[0, x] == 1:
-                cv2.floodFill(tmp, ff_mask, (x, 0), 2)
-            if tmp[h - 1, x] == 1:
-                cv2.floodFill(tmp, ff_mask, (x, h - 1), 2)
-        for y in range(h):
-            if tmp[y, 0] == 1:
-                cv2.floodFill(tmp, ff_mask, (0, y), 2)
-            if tmp[y, w - 1] == 1:
-                cv2.floodFill(tmp, ff_mask, (w - 1, y), 2)
+        # 외부 컨투어 → 내부까지 채우기
+        contours, _ = cv2.findContours(
+            outer_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        filled = np.zeros_like(occ_closed)
+        cv2.drawContours(filled, contours, -1, 1, thickness=cv2.FILLED)
 
-        return (tmp == 1).astype(np.uint8)
+        # 내부 자유공간 = 채워진 영역 - 원본 점유 픽셀
+        interior = ((filled == 1) & (occ_raw == 0)).astype(np.uint8)
+        return interior
 
     # =========================================================================
     # 2. 직사각형 피팅 — minAreaRect로 4꼭짓점 특정
