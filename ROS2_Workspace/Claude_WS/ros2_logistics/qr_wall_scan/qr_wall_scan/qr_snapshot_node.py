@@ -41,10 +41,6 @@ from geometry_msgs.msg import PoseStamped
 import tf2_ros
 from cv_bridge import CvBridge
 from pyzbar import pyzbar
-from lifecycle_msgs.msg import Transition
-from lifecycle_msgs.srv import ChangeState, GetState
-
-CAMERA_NODE = '/v4l2_camera'   # lifecycle 제어 대상 노드 이름
 
 try:
     from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
@@ -147,14 +143,8 @@ class QRSnapshotNode(Node):
             OccupancyGrid, '/map', self._map_callback, map_qos)
 
         # ── 카메라 구독 ────────────────────────────────────────────────────────
-        # 도착 시에만 생성/삭제 → lifecycle client로 카메라 자체를 on/off
+        # 도착 시에만 생성/삭제 (camera_ros는 lifecycle 미지원 → 구독으로 제어)
         self.img_sub = None   # 기본 구독 없음
-
-        # ── lifecycle client (v4l2_camera_node 제어) ──────────────────────────
-        self._lc_change = self.create_client(
-            ChangeState, f'{CAMERA_NODE}/change_state')
-        self._lc_get = self.create_client(
-            GetState, f'{CAMERA_NODE}/get_state')
 
         # ── 퍼블리셔 ─────────────────────────────────────────────────────────
         self.qr_meta_pub      = self.create_publisher(String, '/qr/metadata', 10)
@@ -569,59 +559,10 @@ class QRSnapshotNode(Node):
         return ordered
 
     # =========================================================================
-    # 카메라 lifecycle 제어
+    # 카메라 구독 제어 (camera_ros는 lifecycle 미지원 → 구독 생성/삭제로 제어)
     # =========================================================================
-    def _camera_transition(self, transition_id: int) -> bool:
-        """lifecycle 상태 전이 요청 (비동기 future를 스레드에서 폴링)."""
-        if not self._lc_change.wait_for_service(timeout_sec=3.0):
-            self.get_logger().error('카메라 lifecycle 서비스 없음')
-            return False
-        req = ChangeState.Request()
-        req.transition.id = transition_id
-        future = self._lc_change.call_async(req)
-        deadline = time.time() + 5.0
-        while not future.done() and time.time() < deadline:
-            time.sleep(0.05)
-        if not future.done():
-            self.get_logger().error(f'lifecycle transition {transition_id} 타임아웃')
-            return False
-        if not future.result().success:
-            self.get_logger().error(f'lifecycle transition {transition_id} 거부됨')
-            return False
-        return True
-
-    def _get_camera_state(self) -> str | None:
-        """현재 카메라 lifecycle 상태 반환 ('unconfigured', 'inactive', 'active' 등)."""
-        if not self._lc_get.wait_for_service(timeout_sec=2.0):
-            return None
-        future = self._lc_get.call_async(GetState.Request())
-        deadline = time.time() + 3.0
-        while not future.done() and time.time() < deadline:
-            time.sleep(0.05)
-        if not future.done():
-            return None
-        return future.result().current_state.label   # 'unconfigured'|'inactive'|'active'
-
     def _camera_on(self) -> bool:
-        """카메라 activate (unconfigured→configure→inactive→activate)."""
-        state = self._get_camera_state()
-        if state is None:
-            self.get_logger().error('카메라 상태 조회 실패')
-            return False
-
-        self.get_logger().debug(f'카메라 현재 상태: {state}')
-
-        if state == 'unconfigured':
-            if not self._camera_transition(Transition.TRANSITION_CONFIGURE):
-                return False
-            time.sleep(0.3)
-
-        if state in ('unconfigured', 'inactive'):
-            if not self._camera_transition(Transition.TRANSITION_ACTIVATE):
-                return False
-            time.sleep(0.3)
-
-        # 이미지 구독 생성
+        """img_sub 생성 (도착 시 호출)."""
         if self.img_sub is None:
             self.img_sub = self.create_subscription(
                 CompressedImage,
@@ -629,17 +570,15 @@ class QRSnapshotNode(Node):
                 self._image_callback,
                 rclpy.qos.qos_profile_sensor_data,
             )
-        self.get_logger().info('카메라 ON (active)')
+        self.get_logger().info('카메라 구독 ON')
         return True
 
     def _camera_off(self):
-        """카메라 deactivate + 구독 해제."""
+        """img_sub 삭제 (캡처 완료 후 호출)."""
         if self.img_sub is not None:
             self.destroy_subscription(self.img_sub)
             self.img_sub = None
-
-        self._camera_transition(Transition.TRANSITION_DEACTIVATE)
-        self.get_logger().info('카메라 OFF (inactive)')
+        self.get_logger().info('카메라 구독 OFF')
 
     # =========================================================================
     # TF2 포즈 획득
