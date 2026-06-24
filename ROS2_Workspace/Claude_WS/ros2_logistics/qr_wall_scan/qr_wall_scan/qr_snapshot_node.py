@@ -130,6 +130,8 @@ class QRSnapshotNode(Node):
         # 결과
         self.scan_poses: list[ScanPose] = []   # 계획된 촬영 위치
         self.qr_results: list[dict]    = []    # 감지된 QR 결과
+        self.snap_records: list[dict]  = []    # 위치별 스냅 기록 (DB 노드 입력용)
+        self._last_snap_file: str | None = None
 
         # ── TF2 ───────────────────────────────────────────────────────────────
         self.tf_buffer   = tf2_ros.Buffer()
@@ -154,8 +156,9 @@ class QRSnapshotNode(Node):
         self._lc_get = self.create_client(
             GetState, f'{CAMERA_NODE}/get_state')
 
-        # ── /qr/metadata 퍼블리시 (qr_db_crosscheck_node 호환) ───────────────
-        self.qr_meta_pub = self.create_publisher(String, '/qr/metadata', 10)
+        # ── 퍼블리셔 ─────────────────────────────────────────────────────────
+        self.qr_meta_pub      = self.create_publisher(String, '/qr/metadata', 10)
+        self.scan_complete_pub = self.create_publisher(String, '/qr/scan_complete', 10)
 
         # ── 상태 루프 (1Hz) ──────────────────────────────────────────────────
         self.state_timer = self.create_timer(1.0, self._state_loop)
@@ -277,6 +280,19 @@ class QRSnapshotNode(Node):
                    if scan_pose.angle_to_wall > 0 else '')
             )
 
+            # 위치별 스냅 기록 초기화
+            record = {
+                'pose_idx':      i + 1,
+                'world_x':       scan_pose.world_x,
+                'world_y':       scan_pose.world_y,
+                'yaw_rad':       scan_pose.yaw_rad,
+                'yaw_deg':       scan_pose.yaw_deg,
+                'standoff_m':    scan_pose.standoff_m,
+                'angle_to_wall': scan_pose.angle_to_wall,
+                'snap_file':     None,   # 캡처 성공 시 채워짐
+                'nav_success':   False,
+            }
+
             # 목표 포즈 설정
             goal = PoseStamped()
             goal.header.frame_id = 'map'
@@ -297,34 +313,43 @@ class QRSnapshotNode(Node):
             if result != TaskResult.SUCCEEDED:
                 self.get_logger().warn(
                     f'  [{i+1}] 도달 실패 (결과: {result}) — 다음으로 진행')
+                self.snap_records.append(record)
                 continue
 
+            record['nav_success'] = True
             self.get_logger().info(f'  [{i+1}] 도착 완료 → 카메라 ON')
 
             # 카메라 activate → 캡처 → deactivate
             cam_ok = self._camera_on()
             if not cam_ok:
                 self.get_logger().warn(f'  [{i+1}] 카메라 ON 실패 — 건너뜀')
+                self.snap_records.append(record)
                 continue
 
+            self._last_snap_file = None
             captured = self._wait_for_capture(scan_pose)
             self._camera_off()
 
             if captured:
+                record['snap_file'] = self._last_snap_file
                 self.get_logger().info(
-                    f'  [{i+1}] QR 처리 완료 '
+                    f'  [{i+1}] 캡처 완료: {self._last_snap_file} '
                     f'(누적 감지: {len(self.qr_results)}개)')
             else:
                 self.get_logger().warn(f'  [{i+1}] 캡처 타임아웃')
 
+            self.snap_records.append(record)
+
         # 완료
         self.state = 'DONE'
-        self._save_results()
+        yaml_out = self._save_results()
         self.get_logger().info(
             f'[완료] 총 {total}개 위치 촬영 | '
             f'QR {len(self.qr_results)}개 감지 | '
             f'저장: {self.save_dir}'
         )
+        # qr_database_node에 처리 시작 신호 (yaml 경로 전달)
+        self.scan_complete_pub.publish(String(data=yaml_out))
 
     # =========================================================================
     # 사진 캡처 대기
@@ -408,6 +433,7 @@ class QRSnapshotNode(Node):
         raw_name = f'snap_{snap_idx:03d}_{ts_str}.jpg'
         raw_path = os.path.join(self.save_dir, raw_name)
         cv2.imwrite(raw_path, frame)
+        self._last_snap_file = raw_name   # navigation_worker에서 record에 기록
 
         # QR 감지
         h, w = frame.shape[:2]
@@ -637,25 +663,23 @@ class QRSnapshotNode(Node):
     # =========================================================================
     # 결과 저장 (YAML + TXT)
     # =========================================================================
-    def _save_results(self):
+    def _save_results(self) -> str:
+        """결과 저장 후 yaml 경로 반환."""
         # ── YAML ─────────────────────────────────────────────────────────────
         yaml_path = os.path.join(self.save_dir, 'qr_scan_results.yaml')
+        snapped  = sum(1 for r in self.snap_records if r['snap_file'])
         doc = {
             'session_info': {
-                'map_yaml':       self.map_yaml_path,
-                'standoff_max_m': self.standoff_max,
-                'standoff_min_m': self.standoff_min,
-                'scan_poses':     len(self.scan_poses),
-                'qr_detected':    len(self.qr_results),
+                'map_yaml':        self.map_yaml_path,
+                'snapshots_dir':   self.save_dir,
+                'standoff_max_m':  self.standoff_max,
+                'standoff_min_m':  self.standoff_min,
+                'total_poses':     len(self.scan_poses),
+                'snapped':         snapped,
+                'qr_detected':     len(self.qr_results),
             },
-            'scan_plan': [
-                {'idx': i+1,
-                 'x': p.world_x, 'y': p.world_y,
-                 'yaw_deg': p.yaw_deg,
-                 'standoff_m': p.standoff_m,
-                 'angle_to_wall': p.angle_to_wall}
-                for i, p in enumerate(self.scan_poses)
-            ],
+            # 위치별 스냅 기록 (snap_file=None이면 캡처 실패)
+            'snap_records': self.snap_records,
             'qr_results': self.qr_results,
         }
         with open(yaml_path, 'w', encoding='utf-8') as f:
@@ -705,6 +729,7 @@ class QRSnapshotNode(Node):
 
         self.get_logger().info(
             f'결과 저장 완료:\n  {yaml_path}\n  {txt_path}')
+        return yaml_path
 
 
 # =============================================================================
