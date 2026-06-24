@@ -41,6 +41,10 @@ from geometry_msgs.msg import PoseStamped
 import tf2_ros
 from cv_bridge import CvBridge
 from pyzbar import pyzbar
+from lifecycle_msgs.msg import Transition
+from lifecycle_msgs.srv import ChangeState, GetState
+
+CAMERA_NODE = '/v4l2_camera'   # lifecycle 제어 대상 노드 이름
 
 try:
     from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
@@ -89,7 +93,6 @@ class QRSnapshotNode(Node):
 
         # ── 파라미터 ──────────────────────────────────────────────────────────
         self.declare_parameter('map_yaml_path',  '/home/ubuntu22/map/0622_map_final.yaml')
-        self.declare_parameter('save_dir',       '/home/ubuntu22/qr_scans')
         self.declare_parameter('standoff_max',   0.80)
         self.declare_parameter('standoff_min',   0.30)
         self.declare_parameter('capture_timeout', 3.0)   # 사진 캡처 대기 최대 시간(초)
@@ -97,14 +100,19 @@ class QRSnapshotNode(Node):
         self.declare_parameter('poses_yaml_path', '')
 
         self.map_yaml_path   = self.get_parameter('map_yaml_path').value
-        self.save_dir        = self.get_parameter('save_dir').value
         self.standoff_max    = self.get_parameter('standoff_max').value
         self.standoff_min    = self.get_parameter('standoff_min').value
         self.capture_timeout = self.get_parameter('capture_timeout').value
         self.poses_yaml_path = self.get_parameter('poses_yaml_path').value
         self.map_pgm_path    = self.map_yaml_path.replace('.yaml', '.pgm')
 
+        # 저장 폴더: 맵 yaml 옆 snapshots/ 자동 생성
+        self.save_dir = os.path.join(
+            os.path.dirname(os.path.abspath(self.map_yaml_path)), 'snapshots')
         os.makedirs(self.save_dir, exist_ok=True)
+
+        # 스냅샷 번호 카운터
+        self._snap_idx = 0
 
         # ── 내부 상태 ─────────────────────────────────────────────────────────
         self.state         = 'WAITING_MAP'
@@ -137,13 +145,14 @@ class QRSnapshotNode(Node):
             OccupancyGrid, '/map', self._map_callback, map_qos)
 
         # ── 카메라 구독 ────────────────────────────────────────────────────────
-        # 도착 시에만 1장 처리 → capture_ready 플래그로 제어
-        self.img_sub = self.create_subscription(
-            CompressedImage,
-            '/camera/image_raw/compressed',
-            self._image_callback,
-            rclpy.qos.qos_profile_sensor_data,
-        )
+        # 도착 시에만 생성/삭제 → lifecycle client로 카메라 자체를 on/off
+        self.img_sub = None   # 기본 구독 없음
+
+        # ── lifecycle client (v4l2_camera_node 제어) ──────────────────────────
+        self._lc_change = self.create_client(
+            ChangeState, f'{CAMERA_NODE}/change_state')
+        self._lc_get = self.create_client(
+            GetState, f'{CAMERA_NODE}/get_state')
 
         # ── /qr/metadata 퍼블리시 (qr_db_crosscheck_node 호환) ───────────────
         self.qr_meta_pub = self.create_publisher(String, '/qr/metadata', 10)
@@ -227,6 +236,12 @@ class QRSnapshotNode(Node):
             f'촬영 위치 {len(self.scan_poses)}개 생성 완료'
         )
 
+        # 시작점 최근접 → 시계방향 정렬
+        self.scan_poses = self._sort_poses_clockwise(self.scan_poses, start_xy)
+        self.get_logger().info(
+            f'촬영 순서 확정: 시작점({start_xy[0]:.2f},{start_xy[1]:.2f})에서 '
+            f'가장 가까운 지점부터 시계방향')
+
         if not NAV2_AVAILABLE:
             self.get_logger().error('nav2_simple_commander 미설치!')
             self.state = 'ERROR'
@@ -284,10 +299,16 @@ class QRSnapshotNode(Node):
                     f'  [{i+1}] 도달 실패 (결과: {result}) — 다음으로 진행')
                 continue
 
-            self.get_logger().info(f'  [{i+1}] 도착 완료 → 사진 캡처 시작')
+            self.get_logger().info(f'  [{i+1}] 도착 완료 → 카메라 ON')
 
-            # 사진 캡처 (capture_ready 플래그 활성화)
+            # 카메라 activate → 캡처 → deactivate
+            cam_ok = self._camera_on()
+            if not cam_ok:
+                self.get_logger().warn(f'  [{i+1}] 카메라 ON 실패 — 건너뜀')
+                continue
+
             captured = self._wait_for_capture(scan_pose)
+            self._camera_off()
 
             if captured:
                 self.get_logger().info(
@@ -330,8 +351,11 @@ class QRSnapshotNode(Node):
                 self._capture_ready = False
             return False
 
+        # 스냅샷 번호 부여
+        self._snap_idx += 1
+
         # QR 감지 + 좌표 역산
-        self._process_frame(frame, scan_pose)
+        self._process_frame(frame, scan_pose, self._snap_idx)
         return True
 
     # =========================================================================
@@ -355,7 +379,7 @@ class QRSnapshotNode(Node):
     # =========================================================================
     # 프레임 처리 + QR 위치 역산
     # =========================================================================
-    def _process_frame(self, frame, scan_pose: ScanPose):
+    def _process_frame(self, frame, scan_pose: ScanPose, snap_idx: int = 0):
         """
         캡처된 프레임에서 QR 코드 감지 후 월드 좌표 역산.
 
@@ -379,9 +403,9 @@ class QRSnapshotNode(Node):
                 1 - 2*(q.y*q.y + q.z*q.z)
             )
 
-        # 이미지 저장
-        ts_str   = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:19]
-        raw_name = f'snap_{ts_str}.jpg'
+        # 이미지 저장 (넘버링)
+        ts_str   = datetime.now().strftime('%Y%m%d_%H%M%S')
+        raw_name = f'snap_{snap_idx:03d}_{ts_str}.jpg'
         raw_path = os.path.join(self.save_dir, raw_name)
         cv2.imwrite(raw_path, frame)
 
@@ -474,6 +498,122 @@ class QRSnapshotNode(Node):
                 + (f'world=({qr_world_x:.3f},{qr_world_y:.3f})'
                    if qr_world_x else '좌표 없음')
             )
+
+    # =========================================================================
+    # 촬영 순서 정렬 — 시작점 최근접 포즈부터 시계방향(CW)
+    # =========================================================================
+    def _sort_poses_clockwise(
+            self,
+            poses: list[ScanPose],
+            start_xy: tuple[float, float]) -> list[ScanPose]:
+        """
+        1. 전체 포즈의 무게중심(centroid) 계산
+        2. 각 포즈의 centroid 기준 각도 계산
+        3. 시작점에서 가장 가까운 포즈를 첫 번째로 설정
+        4. 그 각도에서 시계방향(각도 감소, CW) 순으로 정렬
+        """
+        if len(poses) < 2:
+            return poses
+
+        cx = sum(p.world_x for p in poses) / len(poses)
+        cy = sum(p.world_y for p in poses) / len(poses)
+
+        angles = [math.atan2(p.world_y - cy, p.world_x - cx) for p in poses]
+
+        # 시작점에서 가장 가까운 포즈
+        sx, sy = start_xy
+        start_idx = min(
+            range(len(poses)),
+            key=lambda i: math.hypot(poses[i].world_x - sx, poses[i].world_y - sy)
+        )
+        start_angle = angles[start_idx]
+
+        # CW = start_angle 에서 각도가 줄어드는 방향
+        # relative = (start_angle - angle) % 2π → 오름차순 = 시계방향
+        def _cw_key(i):
+            return (start_angle - angles[i]) % (2 * math.pi)
+
+        sorted_poses = sorted(range(len(poses)), key=_cw_key)
+        ordered = [poses[i] for i in sorted_poses]
+
+        self.get_logger().info(
+            f'[CW 정렬] 시작 포즈: #{start_idx+1} '
+            f'({poses[start_idx].world_x:.2f}, {poses[start_idx].world_y:.2f})'
+        )
+        return ordered
+
+    # =========================================================================
+    # 카메라 lifecycle 제어
+    # =========================================================================
+    def _camera_transition(self, transition_id: int) -> bool:
+        """lifecycle 상태 전이 요청 (비동기 future를 스레드에서 폴링)."""
+        if not self._lc_change.wait_for_service(timeout_sec=3.0):
+            self.get_logger().error('카메라 lifecycle 서비스 없음')
+            return False
+        req = ChangeState.Request()
+        req.transition.id = transition_id
+        future = self._lc_change.call_async(req)
+        deadline = time.time() + 5.0
+        while not future.done() and time.time() < deadline:
+            time.sleep(0.05)
+        if not future.done():
+            self.get_logger().error(f'lifecycle transition {transition_id} 타임아웃')
+            return False
+        if not future.result().success:
+            self.get_logger().error(f'lifecycle transition {transition_id} 거부됨')
+            return False
+        return True
+
+    def _get_camera_state(self) -> str | None:
+        """현재 카메라 lifecycle 상태 반환 ('unconfigured', 'inactive', 'active' 등)."""
+        if not self._lc_get.wait_for_service(timeout_sec=2.0):
+            return None
+        future = self._lc_get.call_async(GetState.Request())
+        deadline = time.time() + 3.0
+        while not future.done() and time.time() < deadline:
+            time.sleep(0.05)
+        if not future.done():
+            return None
+        return future.result().current_state.label   # 'unconfigured'|'inactive'|'active'
+
+    def _camera_on(self) -> bool:
+        """카메라 activate (unconfigured→configure→inactive→activate)."""
+        state = self._get_camera_state()
+        if state is None:
+            self.get_logger().error('카메라 상태 조회 실패')
+            return False
+
+        self.get_logger().debug(f'카메라 현재 상태: {state}')
+
+        if state == 'unconfigured':
+            if not self._camera_transition(Transition.TRANSITION_CONFIGURE):
+                return False
+            time.sleep(0.3)
+
+        if state in ('unconfigured', 'inactive'):
+            if not self._camera_transition(Transition.TRANSITION_ACTIVATE):
+                return False
+            time.sleep(0.3)
+
+        # 이미지 구독 생성
+        if self.img_sub is None:
+            self.img_sub = self.create_subscription(
+                CompressedImage,
+                '/camera/image_raw/compressed',
+                self._image_callback,
+                rclpy.qos.qos_profile_sensor_data,
+            )
+        self.get_logger().info('카메라 ON (active)')
+        return True
+
+    def _camera_off(self):
+        """카메라 deactivate + 구독 해제."""
+        if self.img_sub is not None:
+            self.destroy_subscription(self.img_sub)
+            self.img_sub = None
+
+        self._camera_transition(Transition.TRANSITION_DEACTIVATE)
+        self.get_logger().info('카메라 OFF (inactive)')
 
     # =========================================================================
     # TF2 포즈 획득
