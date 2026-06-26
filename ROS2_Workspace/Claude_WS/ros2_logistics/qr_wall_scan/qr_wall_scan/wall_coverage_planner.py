@@ -1,20 +1,31 @@
 #!/usr/bin/env python3
 """
-wall_coverage_planner.py — 실제 외곽 벽 기반 FOV 촬영 좌표 생성
-================================================================
-파이프라인:
-  1. PGM 로드 (픽셀값: 0=벽, 205=unknown, 254=자유공간)
-  2. 254(자유공간)의 최대 연결 성분 = 건물 내부 바닥 → interior_free
-  3. interior_free의 RETR_EXTERNAL 외부 컨투어
-     → 내부 장애물 제외, 실제 외곽 벽만 추출
-  4. approxPolyDP로 픽셀 노이즈 제거
-  5. 컨투어를 일정 간격 샘플링 + inward normal 계산
-  6. 각 벽 포인트 → 내부에서 촬영 가능한 위치 탐색
-  7. 그리디 셋 커버 → 최소 촬영 횟수
-  8. 최근접 이웃 정렬
+wall_coverage_planner.py — 외곽 벽 기반 최소 촬영 위치 자동 생성
+=================================================================
+SLAM으로 생성된 맵 이미지(PGM)를 분석하여 카메라 FOV 내에서
+전체 외벽을 커버하는 최소한의 촬영 위치(ScanPose) 목록을 생성한다.
 
-카메라: Raspberry Pi Camera v2 / FOV 62.2° / 640×480 최저해상도
-QR 70mm 기준 최대 안정 인식 거리 ≤ 0.80m
+Pipeline
+--------
+1. PGM 로드 (픽셀값: 0=벽, 205=unknown, 254=자유공간)
+   Y축 flip — PGM은 상단이 y=0이고 ROS는 하단이 y=0이므로 반전 필요
+2. 254(자유공간)의 최대 연결 성분 → interior_free
+   (내부 장애물로 분리된 복도 공간 제외, 로봇이 실제 이동하는 공간만)
+3. interior_free의 RETR_EXTERNAL 컨투어
+   → 내부 장애물(선반 등)의 벽 자동 제외, 외곽 벽만 추출
+   → erode 2px 처리로 컨투어가 벽 픽셀 위에 올라가는 문제 해결
+4. approxPolyDP로 픽셀 노이즈 제거
+5. 8cm 간격 샘플링 + inward normal 계산
+   (dist_transform 기반: 자유공간 방향이 항상 값이 큼)
+6. 각 벽 포인트 → 내부 촬영 후보 탐색
+   (standoff 0.80→0.30m, 사선 각도 ±30° 범위 탐색, LOS 검증)
+7. Greedy Set Cover → 최소 촬영 횟수로 전체 외벽 커버
+8. 최근접 이웃 정렬 → 이동 거리 최소화
+
+Camera Spec
+-----------
+Raspberry Pi Camera v2 / FOV 62.2° / 640×480
+QR 70mm 기준 최대 안정 인식 거리: 0.80m
 """
 
 import math
@@ -143,10 +154,17 @@ class WallCoveragePlanner:
     # =========================================================================
     def _extract_outer_contour(self) -> np.ndarray:
         """
-        interior_free를 2px erode → 안쪽 경계 사용.
-        - 굵은 벽의 중간이 아닌 자유공간 쪽(안쪽)을 따름
-        - 보간점이 벽 픽셀(img=0) 위에 올라가는 문제 해소 (21% → 0.4%)
-        - RETR_EXTERNAL: 내부 장애물 컨투어 제외
+        외벽 외곽 컨투어 추출.
+
+        interior_free를 2px erode한 뒤 RETR_EXTERNAL로 외부 컨투어만 추출.
+        - erode 목적: 굵은 벽의 중심이 아닌 자유공간 쪽(안쪽 경계)을 따르게 함
+          → 보간점이 벽 픽셀(=0) 위에 올라가는 비율: 21% → 0.4%
+        - RETR_EXTERNAL: 내부 장애물(선반 등)의 컨투어는 자동 제외됨
+
+        Returns
+        -------
+        np.ndarray
+            approxPolyDP 적용된 외곽 컨투어 (N×1×2 형태)
         """
         k = np.ones((3, 3), np.uint8)
         interior_inner = cv2.erode(self.interior_free, k, iterations=2)
@@ -171,9 +189,16 @@ class WallCoveragePlanner:
     # =========================================================================
     def _sample_wall_points(self, contour: np.ndarray) -> list:
         """
-        외곽 컨투어를 wall_sample_m 간격으로 샘플링.
-        inward normal = dist_transform이 큰 방향 (자유공간 방향).
-        Returns: [(px, py, nx, ny), ...]  픽셀 좌표 + 단위 법선
+        외곽 컨투어를 wall_sample_m(기본 8cm) 간격으로 균등 샘플링.
+
+        각 샘플 포인트에서 inward normal(내부 방향 법선)을 계산한다.
+        법선 방향 결정: 좌·우 후보 중 dist_transform 값이 큰 쪽이 자유공간 방향.
+
+        Returns
+        -------
+        list of (px, py, nx, ny)
+            px, py : 벽 포인트 픽셀 좌표 (float)
+            nx, ny : 자유공간 방향 단위 법선 벡터
         """
         interval_px = max(1.0, self.wall_sample_m / self.res)
         pts     = contour[:, 0, :]   # (N, 2)
@@ -226,6 +251,25 @@ class WallCoveragePlanner:
         wall_px: float, wall_py: float,
         nx: float, ny: float,
     ) -> Optional[ScanPose]:
+        """
+        벽 포인트 (wall_px, wall_py)를 촬영할 수 있는 최적 로봇 위치를 탐색.
+
+        탐색 전략
+        ---------
+        사선 각도 [0°, ±15°, ±25°, ±30°] × standoff [0.80→0.30m, 5cm씩 감소]
+        순서로 후보를 탐색하여 최초로 통과하는 위치를 반환.
+
+        통과 조건 (AND)
+        ---------------
+        1. 맵 경계 내부
+        2. 이동 가능 공간 (free_movable > 0)
+        3. 벽으로부터 로봇 반경(0.20m) 이상 거리 (dist_transform 기준)
+        4. 벽 포인트까지 시야 확보 (Bresenham LOS)
+
+        Returns
+        -------
+        ScanPose or None
+        """
         robot_r_px = self.robot_radius_m / self.res
 
         for angle_deg in SCAN_ANGLES_DEG:
@@ -287,6 +331,20 @@ class WallCoveragePlanner:
     # 6. FOV 커버리지
     # =========================================================================
     def _compute_coverage(self, pose: ScanPose, wall_pts: list) -> set:
+        """
+        주어진 ScanPose에서 볼 수 있는 벽 포인트 인덱스 집합을 반환.
+
+        포인트 포함 조건 (AND)
+        ----------------------
+        1. 거리 ≤ max_standoff_m (0.80m)
+        2. FOV 내 (카메라 화각 62.2° = ±31.1°)
+        3. 시야각 ≤ max_view_angle (30°) — 벽 법선 기준 사선 제한
+        4. Bresenham LOS 통과
+
+        Returns
+        -------
+        set of int — 커버되는 wall_pts 인덱스
+        """
         covered = set()
         ppx = (pose.world_x - self.ox) / self.res
         ppy = (pose.world_y - self.oy) / self.res
