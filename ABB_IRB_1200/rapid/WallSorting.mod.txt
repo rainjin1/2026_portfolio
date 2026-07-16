@@ -1,0 +1,313 @@
+MODULE MainModule
+
+    ! ============================================================
+    ! Positions
+    ! All box coords taught with 1 panel inside (1-panel reference)
+    ! pCon = conveyor surface (bottom of base panel when placed)
+    ! ============================================================
+    CONST robtarget pHome_sorting:=[[379.86,-16.57,529.40],[8.07055E-06,0.898131,-0.439728,-8.41012E-06],[-1,-1,-2,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+    CONST robtarget pHome_con:=[[379.86,-16.57,529.40],[8.07055E-06,0.898131,-0.439728,-8.41012E-06],[-1,-1,-2,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+    CONST robtarget pCon:=[[379.86,-16.57,529.40],[8.07055E-06,0.898131,-0.439728,-8.41012E-06],[-1,-1,-2,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+
+    ! Source: random wall panel box (1-panel reference)
+    CONST robtarget pPanelbox:=[[379.86,-16.57,529.40],[8.07055E-06,0.898131,-0.439728,-8.41012E-06],[-1,-1,-2,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+
+    ! Destination: sorted wall panel boxes (1-panel reference)
+    CONST robtarget pWhitepanelbox:=[[379.86,-16.57,529.40],[8.07055E-06,0.898131,-0.439728,-8.41012E-06],[-1,-1,-2,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+    CONST robtarget pBluepanelbox:=[[379.86,-16.57,529.40],[8.07055E-06,0.898131,-0.439728,-8.41012E-06],[-1,-1,-2,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+    CONST robtarget pBrownpanelbox:=[[379.86,-16.57,529.40],[8.07055E-06,0.898131,-0.439728,-8.41012E-06],[-1,-1,-2,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+
+    ! Source: pre-sorted base / ceiling boxes (1-panel reference)
+    CONST robtarget pBasepanelbox:=[[379.86,-16.57,529.40],[8.07055E-06,0.898131,-0.439728,-8.41012E-06],[-1,-1,-2,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+    CONST robtarget pCeilingpanelbox:=[[379.86,-16.57,529.40],[8.07055E-06,0.898131,-0.439728,-8.41012E-06],[-1,-1,-2,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+
+    ! ============================================================
+    ! Physical constants (@ = measure and fill in)
+    ! ============================================================
+    CONST num ToP:=2;       ! Thickness of wall panel (mm)
+    CONST num ToB:=1;       ! Base panel: suction face height from bottom (mm)
+    CONST num HoB:=1;       ! Base panel: total height (mm)
+    CONST num ToC:=1;       ! Ceiling panel: suction face height from bottom (mm)
+    CONST num HoC:=1;       ! Ceiling panel: total height (mm)
+    CONST num SafeRange:=100; ! Approach clearance (mm)
+
+    ! ============================================================
+    ! Manual input — set before run
+    ! ============================================================
+    VAR num WallPanelTotal:=0;    ! Total wall panels loaded in pPanelbox
+    VAR num BasePanelTotal:=0;    ! Total base panels in pBasepanelbox
+    VAR num CeilingPanelTotal:=0; ! Total ceiling panels in pCeilingpanelbox
+
+    ! ============================================================
+    ! Runtime counters
+    ! Pick formula:  TCP = pXXX + (count-1) * unit  (count=1 → no offset)
+    ! Place formula: TCP = pXXX + count * unit       (count=0 → no offset)
+    ! ============================================================
+    VAR num WpC:=0;    ! White panels in white box
+    VAR num BlpC:=0;   ! Blue panels in blue box
+    VAR num BrpC:=0;   ! Brown panels in brown box
+    VAR num BpC:=0;    ! Base panels remaining in base box
+    VAR num CpC:=0;    ! Ceiling panels remaining in ceiling box
+
+    ! ============================================================
+    ! Conveyor stack tracker
+    ! HoL = current stack height above pCon (conveyor surface)
+    ! Place_to_Con formula: TCP = pCon + HoL + suck_offs
+    ! ============================================================
+    VAR num HoL:=0;
+
+    ! ============================================================
+    ! Camera (stub — replace with socket later)
+    ! ============================================================
+    VAR string panel_color; ! "white" / "blue" / "brown"
+
+    TASK PERS tooldata tool1:=[TRUE,[[0,0,110],[1,0,0,0]],[0.2,[0,0,50],[1,0,0,0],0,0,0]];
+
+    ! ============================================================
+    PROC main()
+        AccSet 1,1;
+        BpC := BasePanelTotal;
+        CpC := CeilingPanelTotal;
+
+        MoveJ pHome_sorting, v200, z50, tool1;
+
+        Phase1_Sort;
+        Phase2_Output;
+
+        MoveJ pHome_con, v200, z50, tool1;
+    ENDPROC
+
+    ! ============================================================
+    ! Phase 1: Sort all wall panels by color
+    ! Runs until WpC + BlpC + BrpC = WallPanelTotal
+    ! ============================================================
+    PROC Phase1_Sort()
+        VAR num src_count; ! Panels remaining in source box
+        VAR num Zpick;
+        VAR num Zplace;
+
+        WHILE (WpC + BlpC + BrpC) < WallPanelTotal DO
+
+            src_count := WallPanelTotal - (WpC + BlpC + BrpC);
+
+            Camera_Classify; ! TODO: socket receive → panel_color
+
+            ! Pick from source box
+            Zpick := (src_count - 1) * ToP; ! 0 when last panel remains
+            MoveJ pHome_sorting, v200, z50, tool1;
+            MoveJ Offs(pPanelbox, 0, 0, Zpick + SafeRange), v200, z5, tool1;
+            MoveL Offs(pPanelbox, 0, 0, Zpick),              v50,  fine, tool1;
+            absorber_on;
+            MoveL Offs(pPanelbox, 0, 0, Zpick + SafeRange), v50,  z5,   tool1;
+
+            ! Place to appropriate color box
+            IF panel_color = "white" THEN
+                Zplace := WpC * ToP;
+                MoveJ pHome_sorting, v200, z50, tool1;
+                MoveJ Offs(pWhitepanelbox, 0, 0, Zplace + SafeRange), v200, z5, tool1;
+                MoveL Offs(pWhitepanelbox, 0, 0, Zplace),              v50,  fine, tool1;
+                absorber_off;
+                MoveL Offs(pWhitepanelbox, 0, 0, Zplace + SafeRange), v50,  z5,   tool1;
+                WpC := WpC + 1;
+
+            ELSEIF panel_color = "blue" THEN
+                Zplace := BlpC * ToP;
+                MoveJ pHome_sorting, v200, z50, tool1;
+                MoveJ Offs(pBluepanelbox, 0, 0, Zplace + SafeRange), v200, z5, tool1;
+                MoveL Offs(pBluepanelbox, 0, 0, Zplace),              v50,  fine, tool1;
+                absorber_off;
+                MoveL Offs(pBluepanelbox, 0, 0, Zplace + SafeRange), v50,  z5,   tool1;
+                BlpC := BlpC + 1;
+
+            ELSEIF panel_color = "brown" THEN
+                Zplace := BrpC * ToP;
+                MoveJ pHome_sorting, v200, z50, tool1;
+                MoveJ Offs(pBrownpanelbox, 0, 0, Zplace + SafeRange), v200, z5, tool1;
+                MoveL Offs(pBrownpanelbox, 0, 0, Zplace),              v50,  fine, tool1;
+                absorber_off;
+                MoveL Offs(pBrownpanelbox, 0, 0, Zplace + SafeRange), v50,  z5,   tool1;
+                BrpC := BrpC + 1;
+            ENDIF
+
+            MoveJ pHome_sorting, v200, z50, tool1;
+
+        ENDWHILE
+    ENDPROC
+
+    ! ============================================================
+    ! Phase 2: Stack one complete set onto conveyor
+    ! Fixed sequence: Base -> White -> Brown x2 -> Blue -> Ceiling
+    !
+    ! pCon = conveyor surface (bottom of base panel landing point)
+    ! Place_to_Con(suck_offs):
+    !   TCP = pCon + HoL + suck_offs
+    !   HoL updated after each placement
+    ! ============================================================
+    PROC Phase2_Output()
+        HoL := 0;
+
+        ! 1. Base panel
+        Pick_Basepanel;
+        Place_to_Con ToB;
+        HoL := ToB;        ! Wall panels sit on base suction face (ToB), NOT HoB
+
+        ! 2. White wall panel (stacks from ToB level upward)
+        Pick_Wallpanel "white";
+        Place_to_Con ToP;
+        HoL := HoL + ToP;
+
+        ! 3. Brown wall panel #1
+        Pick_Wallpanel "brown";
+        Place_to_Con ToP;
+        HoL := HoL + ToP;
+
+        ! 4. Brown wall panel #2
+        Pick_Wallpanel "brown";
+        Place_to_Con ToP;
+        HoL := HoL + ToP;
+
+        ! 5. Blue wall panel (HoL = ToB + 4xToP here, still below HoB)
+        Pick_Wallpanel "blue";
+        Place_to_Con ToP;
+
+        ! 6. Ceiling panel — rests on base rim at HoB, independent of wall stack height
+        Pick_Ceilingpanel;
+        Place_Ceiling;     ! TCP = pCon + HoB + ToC  (fixed, no HoL)
+
+        Conveyor_Advance;
+        HoL := 0;
+    ENDPROC
+
+    ! ============================================================
+    ! Pick: Base panel
+    ! Formula: TCP = pBasepanelbox + (BpC-1)*HoB
+    ! ============================================================
+    PROC Pick_Basepanel()
+        VAR num Zpick;
+        Zpick := (BpC - 1) * HoB; ! 0 when only 1 remains
+        MoveJ pHome_con, v200, z50, tool1;
+        MoveJ Offs(pBasepanelbox, 0, 0, Zpick + SafeRange), v200, z5,   tool1;
+        MoveL Offs(pBasepanelbox, 0, 0, Zpick),              v50,  fine, tool1;
+        absorber_on;
+        MoveL Offs(pBasepanelbox, 0, 0, Zpick + SafeRange), v50,  z5,   tool1;
+        MoveJ pHome_con, v200, z50, tool1;
+        BpC := BpC - 1;
+    ENDPROC
+
+    ! ============================================================
+    ! Pick: Wall panel from sorted color box
+    ! Formula: TCP = pXXXpanelbox + (count-1)*ToP
+    ! ============================================================
+    PROC Pick_Wallpanel(string color)
+        VAR num Zpick;
+
+        IF color = "white" THEN
+            Zpick := (WpC - 1) * ToP;
+            MoveJ pHome_sorting, v200, z50, tool1;
+            MoveJ Offs(pWhitepanelbox, 0, 0, Zpick + SafeRange), v200, z5,   tool1;
+            MoveL Offs(pWhitepanelbox, 0, 0, Zpick),              v50,  fine, tool1;
+            absorber_on;
+            MoveL Offs(pWhitepanelbox, 0, 0, Zpick + SafeRange), v50,  z5,   tool1;
+            WpC := WpC - 1;
+
+        ELSEIF color = "blue" THEN
+            Zpick := (BlpC - 1) * ToP;
+            MoveJ pHome_sorting, v200, z50, tool1;
+            MoveJ Offs(pBluepanelbox, 0, 0, Zpick + SafeRange), v200, z5,   tool1;
+            MoveL Offs(pBluepanelbox, 0, 0, Zpick),              v50,  fine, tool1;
+            absorber_on;
+            MoveL Offs(pBluepanelbox, 0, 0, Zpick + SafeRange), v50,  z5,   tool1;
+            BlpC := BlpC - 1;
+
+        ELSEIF color = "brown" THEN
+            Zpick := (BrpC - 1) * ToP;
+            MoveJ pHome_sorting, v200, z50, tool1;
+            MoveJ Offs(pBrownpanelbox, 0, 0, Zpick + SafeRange), v200, z5,   tool1;
+            MoveL Offs(pBrownpanelbox, 0, 0, Zpick),              v50,  fine, tool1;
+            absorber_on;
+            MoveL Offs(pBrownpanelbox, 0, 0, Zpick + SafeRange), v50,  z5,   tool1;
+            BrpC := BrpC - 1;
+        ENDIF
+
+        MoveJ pHome_sorting, v200, z50, tool1;
+    ENDPROC
+
+    ! ============================================================
+    ! Pick: Ceiling panel
+    ! Formula: TCP = pCeilingpanelbox + (CpC-1)*HoC
+    ! ============================================================
+    PROC Pick_Ceilingpanel()
+        VAR num Zpick;
+        Zpick := (CpC - 1) * HoC; ! 0 when only 1 remains
+        MoveJ pHome_con, v200, z50, tool1;
+        MoveJ Offs(pCeilingpanelbox, 0, 0, Zpick + SafeRange), v200, z5,   tool1;
+        MoveL Offs(pCeilingpanelbox, 0, 0, Zpick),              v50,  fine, tool1;
+        absorber_on;
+        MoveL Offs(pCeilingpanelbox, 0, 0, Zpick + SafeRange), v50,  z5,   tool1;
+        MoveJ pHome_con, v200, z50, tool1;
+        CpC := CpC - 1;
+    ENDPROC
+
+    ! ============================================================
+    ! Place onto conveyor stack
+    ! TCP = pCon + HoL + suck_offs
+    !   pCon    = conveyor surface (base panel bottom landing point)
+    !   HoL     = current stack height above pCon
+    !   suck_offs = suction face height from panel bottom (ToB/ToP/ToC)
+    ! ============================================================
+    PROC Place_to_Con(num suck_offs)
+        MoveJ pHome_con, v200, z50, tool1;
+        MoveJ Offs(pCon, 0, 0, HoL + suck_offs + SafeRange), v200, z5,   tool1;
+        MoveL Offs(pCon, 0, 0, HoL + suck_offs),              v50,  fine, tool1;
+        absorber_off;
+        MoveL Offs(pCon, 0, 0, HoL + suck_offs + SafeRange), v50,  z5,   tool1;
+        MoveJ pHome_con, v200, z50, tool1;
+    ENDPROC
+
+    ! ============================================================
+    ! Place ceiling panel onto conveyor stack
+    ! Ceiling rests on base panel top rim (HoB), not on wall stack
+    ! TCP = pCon + HoB + ToC  (HoL is NOT used here)
+    ! ============================================================
+    PROC Place_Ceiling()
+        MoveJ pHome_con, v200, z50, tool1;
+        MoveJ Offs(pCon, 0, 0, HoB + ToC + SafeRange), v200, z5,   tool1;
+        MoveL Offs(pCon, 0, 0, HoB + ToC),              v50,  fine, tool1;
+        absorber_off;
+        MoveL Offs(pCon, 0, 0, HoB + ToC + SafeRange), v50,  z5,   tool1;
+        MoveJ pHome_con, v200, z50, tool1;
+    ENDPROC
+
+    ! ============================================================
+    ! Conveyor advance
+    ! ============================================================
+    PROC Conveyor_Advance()
+        PulseDO\PLength:=0.5, do02_conveyor;
+        WaitTime 1; ! Wait for belt to move
+        ! TODO: replace WaitTime with WaitDI di02_conveyor_ready, 1
+    ENDPROC
+
+    ! ============================================================
+    ! Camera classify (stub)
+    ! Replace body with TCP/IP socket receive when ready
+    ! ============================================================
+    PROC Camera_Classify()
+        ! TODO: SocketReceive camSocket \Str:=panel_color;
+    ENDPROC
+
+    ! ============================================================
+    ! Absorber control
+    ! ============================================================
+    PROC absorber_on()
+        PulseDO\PLength:=0.2, do00_absorber_on;
+        WaitTime 0.2;
+        ! TODO: WaitDI di00_absorber_confirm, 1;
+    ENDPROC
+
+    PROC absorber_off()
+        PulseDO\PLength:=0.2, do01_absorber_off;
+        WaitTime 1;
+        ! TODO: WaitDI di01_absorber_release, 1;
+    ENDPROC
+
+ENDMODULE

@@ -1,0 +1,47 @@
+MODULE MainModule
+	CONST robtarget pHome_con:=[[379.86,-16.57,529.40],[8.07055E-06,0.898131,-0.439728,-8.41012E-06],[-1,-1,-2,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+    CONST robtarget pCon
+
+    !pabek boxes Coords
+    CONST robtarget pPanelbox:=[[379.86,-16.57,529.40],[8.07055E-06,0.898131,-0.439728,-8.41012E-06],[-1,-1,-2,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+    CONST robtarget pWhitepanelbox:=[[379.86,-16.57,529.40],[8.07055E-06,0.898131,-0.439728,-8.41012E-06],[-1,-1,-2,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+    CONST robtarget pBluepanelbox:=[[379.86,-16.57,529.40],[8.07055E-06,0.898131,-0.439728,-8.41012E-06],[-1,-1,-2,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+    CONST robtarget pBrownpanelbox:=[[379.86,-16.57,529.40],[8.07055E-06,0.898131,-0.439728,-8.41012E-06],[-1,-1,-2,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+    CONST robtarget pBasepanelbox:=[[379.86,-16.57,529.40],[8.07055E-06,0.898131,-0.439728,-8.41012E-06],[-1,-1,-2,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+    CONST robtarget pCeilingpanelbox
+
+
+    !Const Num of panels(height, thickness)
+    CONST Num ToP:= 2 !Thickness of wall panels
+    CONST Num Tob:=     !Thickness of Base panel
+    CONST Num HoB:=     !Height of Base panel
+    CONST Num ToC:=     !Thickness of Ceiling panel
+    CONST Num HoC:=     !Height of Ceiling panel
+    CONST Num HoS:=     !Heght of Box Supports
+
+    Var
+
+
+	TASK PERS tooldata tool1:=[TRUE,[[0,0,110],[1,0,0,0]],[0.2,[0,0,50],[1,0,0,0],0,0,0]];
+	
+	PROC main()
+        AccSet 1,1;
+        MoveJ pHome_con, v200, z50, tool1; !move to pHome_con
+
+
+    ENDPROC
+    
+    PROC Basebox_to_Con
+    ENDPROC
+
+
+
+    PROC absorber_on()  !흡착기 온
+        PulseDO\PLength:=0.2, do00_absorber_on;
+        WaitTime 0.2;        
+    ENDPROC
+    
+    PROC absorber_off()
+        PulseDO\PLength:=0.2, do01_absorber_off;
+        WaitTime 1;
+    ENDPROC

@@ -1,0 +1,90 @@
+MODULE Phase1Sort
+! ===================================================================
+! Project  : Modular House Wall Panel Auto-Stacking System
+! File     : Phase1_Sort_ENG_20260714.mod.txt
+! Date     : 2026-07-14
+! Version  : 1.0  Draft
+! Scope    : Phase 1 — camera color sort via socket
+!            IF branch pick-and-place content to be filled in by user
+! ===================================================================
+
+    ! ── Socket handles ───────────────────────────────────────────────
+    VAR socketdev server_sock;
+    VAR socketdev client_sock;
+
+    ! ── Communication buffers ────────────────────────────────────────
+    VAR string recv_str;
+    VAR bool   conv_ok;
+
+    ! ── Panel count ──────────────────────────────────────────────────
+    ! total_panels : set_cnt * 4  (4 wall panels per set)
+    ! decremented by 1 each time a panel is sorted
+    VAR num set_cnt      := 0;
+    VAR num total_panels := 0;
+    VAR num color_result := 0;   ! 1=white  2=blue  3=brown
+
+    ! ================================================================
+    ! phase1_sort
+    !
+    !   [0] Open server socket, wait for laptop to connect
+    !       Handshake: send "HELLO" -> expect "OK"
+    !
+    !   [1] Request set count
+    !       Send "HOW_MANY" -> receive number (string)
+    !       total_panels := set_cnt * 4
+    !
+    !   [2] Sorting loop  (WHILE total_panels <> 0)
+    !       Send "REQ" -> receive color code ("1"/"2"/"3")
+    !       Branch on color_result -> pick & place (user fills in)
+    !       total_panels := total_panels - 1
+    !
+    !   [3] Loop done -> close socket -> Phase 2 hands off
+    ! ================================================================
+    PROC phase1_sort()
+
+        ! ── [0] Server setup & handshake ─────────────────────────────
+        SocketCreate server_sock;
+        SocketBind   server_sock, "192.168.xxx.xxx", 1025;  ! <- robot IP
+        SocketListen server_sock;
+        SocketAccept server_sock, client_sock \Time:=60;    ! wait up to 60 s
+
+        SocketSend    client_sock \Str:="HELLO";
+        SocketReceive client_sock \Str:=recv_str \Time:=10;
+        ! recv_str expected: "OK"
+
+        ! ── [1] Get set count ─────────────────────────────────────────
+        SocketSend    client_sock \Str:="HOW_MANY";
+        SocketReceive client_sock \Str:=recv_str \Time:=30;
+        conv_ok      := StrToVal(recv_str, set_cnt);
+        total_panels := set_cnt * 4;
+
+        ! ── [2] Sorting loop ──────────────────────────────────────────
+        WHILE total_panels <> 0 DO
+
+            SocketSend    client_sock \Str:="REQ";
+            SocketReceive client_sock \Str:=recv_str \Time:=10;
+            conv_ok := StrToVal(recv_str, color_result);
+
+            ! -- Color branch: fill in pick-and-place for each color --
+            IF color_result = 1 THEN
+                ! white -> pWallbox1
+
+            ELSEIF color_result = 2 THEN
+                ! blue  -> pWallbox2
+
+            ELSEIF color_result = 3 THEN
+                ! brown -> pWallbox3
+
+            ENDIF
+
+            total_panels := total_panels - 1;
+
+        ENDWHILE
+
+        ! ── [3] Close socket -> Phase 2 ───────────────────────────────
+        SocketClose client_sock;
+        SocketClose server_sock;
+
+    ENDPROC
+
+ENDMODULE
