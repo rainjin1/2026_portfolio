@@ -1,0 +1,33 @@
+Coordinates 좌표모음
+pHome_sorting: safe position around wall panel box(random color) 벽 패널 전체적재함과 각 색별 패널 적재함 사이의 임의 안전좌표
+pHome_con: safe position around conveyor 컨베이어 주변의 안전좌표
+pCon: Conveyor 컨베이어 면 좌표
+pPanelbox: Panel(random color) box, offs z={2mm(thickness of panel) * count of panels} 벽 패널 전채 적재함 바닥좌표
+
+pWhitepanelbox: white panel box, offs z same 하얀 벽 패널 적재함 바닥좌표
+pBluepanelbox: same					파랑 벽 패널 적재함 바닥좌표
+pBrownpanelbox: same					갈색 벽 패널 적재함 바닥좌표
+pBasepanelbox: Base panel box, offs z(HoB * count of Base panels)		베이스패널 적재함 바닥 좌표
+pCeilingpanelbox: Ceiling panel box, offs z(HoC * count of Ceiling panels)	천장패널 적재함 바닥좌표
+각 적재함 바닥좌표를 기준으로, 투입한 각 패널의 숫자별로 각각의 오프셋값
+
+
+pCon: conveyor 				컨베이어 면 좌표
+
+Const num
+ToP:=2 !Thickness of wall panel		벽 패널 두께
+ToB:= @ !Thickness of Base panel		베이스 패널 두께(바닥~흡착면)
+ToC:= @ !Thinkness of Ceiling panel	천장 패널 두께(바닥~흡착면)
+HoB:= @ !Height of Base panel		베이스 패널 높이(전체 높이)
+HoC:= @ !Height of ceiling			천장 패널 높이(전체높이)
+HoS:= @ !Height of box support		각 적재함의 지지대높이
+
+Variables
+BpC:= @ !Count of Base panels	적재함의 베이스 패널 수량
+CpC:= @ !Count of Ceiling panels	적재함의 천장 패널 수량
+WpC:= @ !Count of White panels 하얀 벽 패널 수량
+BlpC:= @ !Count of Blue panels 파란 벽 패널 수량
+BrpC:= @ !Count of Brown panels 갈색 벽 패널 수량
+
+
+

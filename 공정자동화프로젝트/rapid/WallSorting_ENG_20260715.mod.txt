@@ -1,0 +1,337 @@
+MODULE WallSorting
+! ===================================================================
+! Project  : Modular House Wall Panel Auto-Stacking System
+! File     : WallSorting_ENG_20260715.mod.txt
+! Date     : 2026-07-15
+! Version  : 1.3  -- Persistent socket, batch cycle loop, buzzer/restart
+! Scope    : Phase 1 (socket color sort) -> Phase 2 (conveyor output x set_cnt)
+!            Socket opened once at program start; cycles on PLC restart signal
+! ===================================================================
+
+    ! -- Tool -------------------------------------------------------
+    ! TCP : z = 184 mm from flange
+    ! Mass: 0.1 kg,  CoM: z = 95 mm
+    ! ---------------------------------------------------------------
+    TASK PERS tooldata tool1 := [TRUE,[[0,0,184],[1,0,0,0]],
+                                       [0.1,[0,0,95],[1,0,0,0],0,0,0]];
+
+    ! -- Positions (teach before run) -------------------------------
+    CONST robtarget pBasebox   := [[42.03,-355.71,190.15],[0.00017954,-0.423396,-0.905945,-0.000537782],[-1,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];    ! base panel box, 1-panel ref
+    CONST robtarget pCeilbox   := [[-232.86,-352.68,186.58],[0.000177258,-0.42341,-0.905938,-0.000557031],[-2,-1,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]; ! ceiling panel box, 1-panel ref
+    CONST robtarget pWallbox1  := [[388.06,270.84,314.26],[0.000170019,-0.423388,-0.905948,-0.000495164],[0,0,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];      ! white wall box, 1-panel ref
+    CONST robtarget pWallbox2  := [[386.64,373.14,314.07],[0.000190331,-0.42339,-0.905948,-0.000452282],[0,0,1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];       ! gray wall box, 1-panel ref
+    CONST robtarget pWallbox3  := [[0,0,0],[1,0,0,0],[0,0,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];                                                          ! yellow wall box (teach pending)
+    CONST robtarget pSafe1     := [[-77.46,-352.69,335.42],[0.000167978,-0.423408,-0.905939,-0.000522554],[-2,-1,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];  ! safe pos: base/ceiling side
+    CONST robtarget pSafe2     := [[351.71,375.96,568.83],[0.000131441,-0.423384,-0.90595,-0.000470973],[0,0,1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];       ! safe pos: wall box side
+    CONST robtarget pSafe3     := [[298.40,-158.58,574.66],[0.00014785,-0.423394,-0.905945,-0.000483361],[-1,0,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];     ! safe pos: global home
+    CONST robtarget pCon_BB    := [[96.34,-568.44,158.54],[0.000228554,-0.423493,-0.905899,-0.000527713],[-1,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];    ! conveyor base-panel place ref
+    CONST robtarget pCon_Wall1 := [[89.51,-570.03,162.88],[0.000207282,-0.423375,-0.905954,-0.000557022],[-1,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];   ! wall place ref - box1 angle
+    CONST robtarget pCon_Wall2 := [[89.51,-570.03,162.88],[0.000207282,-0.423375,-0.905954,-0.000557022],[-1,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];   ! wall place ref - box2 angle (teach pending)
+    CONST robtarget pCon_Wall3 := [[89.51,-570.03,162.88],[0.000207282,-0.423375,-0.905954,-0.000557022],[-1,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];   ! wall place ref - box3 angle (teach pending)
+    CONST robtarget pCon_Ceil  := [[87.98,-571.00,176.60],[0.000234693,-0.417117,-0.908853,-0.000599078],[-1,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];   ! ceiling place ref
+
+    CONST robtarget pSafeWallboxes  := [[42.03,-355.71,190.15],[0.00017954,-0.423396,-0.905945,-0.000537782],[-1,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]; ! safe pos near sort boxes (teach pending)
+    CONST robtarget pSortAllWallBox := [[42.03,-355.71,190.15],[0.00017954,-0.423396,-0.905945,-0.000537782],[-1,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]; ! unsorted input box pick ref (teach pending)
+    CONST robtarget pSortWallBox1   := [[42.03,-355.71,190.15],[0.00017954,-0.423396,-0.905945,-0.000537782],[-1,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]; ! white sort dest (teach pending)
+    CONST robtarget pSortWallBox2   := [[42.03,-355.71,190.15],[0.00017954,-0.423396,-0.905945,-0.000537782],[-1,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]; ! gray  sort dest (teach pending)
+    CONST robtarget pSortWallBox3   := [[42.03,-355.71,190.15],[0.00017954,-0.423396,-0.905945,-0.000537782],[-1,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]; ! yellow sort dest (teach pending)
+
+    ! -- Physical constants (unit: mm) ------------------------------
+    CONST num HoB             := 20;   ! base panel height
+    CONST num HoC             := 11;   ! ceiling panel thickness
+    CONST num ToP             := 2;    ! wall panel thickness
+    CONST num StandB          := 59;   ! base box support height
+    CONST num StandC          := 59;   ! ceiling box support height
+    CONST num StandW          := 120;  ! wall box support height
+    CONST num AppClear        := 50;   ! approach/retract clearance
+    CONST num StandAllWallBox := 100;  ! unsorted input box support height
+
+    ! -- Phase 2 panel count variables ------------------------------
+    VAR num BpC       := 1;   ! base panels remaining
+    VAR num CpC       := 1;   ! ceiling panels remaining
+    VAR num WpC1      := 0;   ! white wall panels in sort box  (built up in P1, depleted in P2)
+    VAR num WpC2      := 0;   ! gray  wall panels in sort box
+    VAR num WpC3      := 0;   ! yellow wall panels in sort box
+    VAR num stack_cnt := 1;   ! conveyor wall stack counter (1-4)
+
+    ! -- Phase 1 socket variables -----------------------------------
+    VAR socketdev server_sock;
+    VAR socketdev client_sock;
+    VAR string    recv_str;
+    VAR bool      conv_ok;
+    VAR num       set_cnt      := 0;  ! number of modules for this batch
+    VAR num       total_panels := 0;  ! set_cnt * 4
+    VAR num       color_result := 0;  ! 1=white  2=gray  3=yellow
+
+    ! ================================================================
+    ! main
+    !   Socket opened ONCE at program start (HELLO handshake here).
+    !   Batch cycle: phase1_sort -> phase2_output(x set_cnt) -> buzzer -> restart
+    ! ================================================================
+    PROC main()
+        AccSet 1, 1;
+        MoveJ pSafe3, v200, z50, tool1;
+
+        ! -- Socket init: run once per program start ----------------
+        SocketCreate server_sock;
+        SocketBind   server_sock, "192.168.3.2", 1025;
+        SocketListen server_sock;
+        SocketAccept server_sock, client_sock \Time:=60;
+        SocketSend    client_sock \Str:="HELLO";
+        SocketReceive client_sock \Str:=recv_str \Time:=60;
+        ! recv_str expected: "OK"
+
+        ! -- Batch cycle loop (runs indefinitely until E-stop) ------
+        WHILE TRUE DO
+
+            ! Reset sort panel counts for new batch
+            WpC1 := 0;
+            WpC2 := 0;
+            WpC3 := 0;
+
+            phase1_sort;
+
+            phase2_output;
+
+            ! Batch complete: alert operator, wait for reload + restart
+            PulseDO\PLength:=1, do04_buzzer;
+            WaitDI di08_restart, 1;
+
+        ENDWHILE
+    ENDPROC
+
+    ! ================================================================
+    ! phase1_sort
+    !   Socket already open when called -- no SocketCreate/Close here.
+    !   [1] HOW_MANY -> set_cnt  (600 s timeout: operator data entry time)
+    !   [2] WHILE total_panels <> 0 : REQ -> color -> sort -> decrement
+    ! ================================================================
+    PROC phase1_sort()
+
+        ! -- [1] Request set count ----------------------------------
+        SocketSend    client_sock \Str:="HOW_MANY";
+        SocketReceive client_sock \Str:=recv_str \Time:=600;
+        conv_ok      := StrToVal(recv_str, set_cnt);
+        total_panels := set_cnt * 4;
+        BpC := set_cnt;
+        CpC := set_cnt;
+        TPErase;
+        TPWrite "Set count received: " + ValToStr(set_cnt);
+
+        ! -- [2] Sorting loop ---------------------------------------
+        WHILE total_panels <> 0 DO
+
+            MoveJ pSafeWallboxes, v200, z50, tool1;
+            SocketSend    client_sock \Str:="REQ";
+            SocketReceive client_sock \Str:=recv_str \Time:=10;
+            conv_ok := StrToVal(recv_str, color_result);
+
+            ! Pick from unsorted input box
+            MoveJ Offs(pSortAllWallBox, 0, 0, StandAllWallBox), v200, z50, tool1;
+            MoveL Offs(pSortAllWallBox, 0, 0, (total_panels - 1) * 2), v50, fine, tool1;
+            absorber_on;
+            MoveL Offs(pSortAllWallBox, 0, 0, StandAllWallBox), v50, z50, tool1;
+
+            ! Color branch: place into sorted destination box
+            IF color_result = 1 THEN
+                ! white -> pSortWallBox1
+                MoveJ Offs(pSortWallBox1, 0, 0, StandAllWallBox), v200, z50, tool1;
+                MoveL Offs(pSortWallBox1, 0, 0, WpC1 * 2), v50, fine, tool1;
+                absorber_off;
+                WpC1 := WpC1 + 1;
+                MoveL Offs(pSortWallBox1, 0, 0, StandAllWallBox), v200, z50, tool1;
+
+            ELSEIF color_result = 2 THEN
+                ! gray -> pSortWallBox2
+                MoveJ Offs(pSortWallBox2, 0, 0, StandAllWallBox), v200, z50, tool1;
+                MoveL Offs(pSortWallBox2, 0, 0, WpC2 * 2), v50, fine, tool1;
+                absorber_off;
+                WpC2 := WpC2 + 1;
+                MoveL Offs(pSortWallBox2, 0, 0, StandAllWallBox), v200, z50, tool1;
+
+            ELSEIF color_result = 3 THEN
+                ! yellow -> pSortWallBox3
+                MoveJ Offs(pSortWallBox3, 0, 0, StandAllWallBox), v200, z50, tool1;
+                MoveL Offs(pSortWallBox3, 0, 0, WpC3 * 2), v50, fine, tool1;
+                absorber_off;
+                WpC3 := WpC3 + 1;
+                MoveL Offs(pSortWallBox3, 0, 0, StandAllWallBox), v200, z50, tool1;
+
+            ENDIF
+
+            total_panels := total_panels - 1;
+
+        ENDWHILE
+
+    ERROR
+        IF ERRNO = ERR_SOCK_TIMEOUT THEN
+            TPWrite "Socket: timeout -- program halted";
+            STOP;
+        ELSEIF ERRNO = ERR_SOCK_CLOSED THEN
+            TPWrite "Socket: connection lost -- program halted";
+            STOP;
+        ELSE
+            TPWrite "Socket: error " + ValToStr(ERRNO) + " -- program halted";
+            STOP;
+        ENDIF
+    ENDPROC
+
+    ! ================================================================
+    ! phase2_output
+    !   Repeat full module output (base + 4 walls + ceiling + eject)
+    !   set_cnt times. Buzzer and restart signal handled in main().
+    ! ================================================================
+    PROC phase2_output()
+        FOR i FROM 1 TO set_cnt DO
+            stack_cnt := 1;
+            base_to_con;
+            FOR j FROM 1 TO 4 DO
+                temp_wall_to_con;
+            ENDFOR
+            ceil_to_con;
+            ! Eject module
+            PulseDO\PLength:=0.2, do11_cyl_off;
+            WaitTime 1;
+            PulseDO\PLength:=3, do08_conv_fwd;
+            WaitTime 3;
+        ENDFOR
+    ENDPROC
+
+    ! ================================================================
+    ! absorber_on / absorber_off
+    ! ================================================================
+    PROC absorber_on()
+        PulseDO\PLength:=0.2, do00_absorber_on;
+        WaitTime 0.5;
+    ENDPROC
+
+    PROC absorber_off()
+        PulseDO\PLength:=0.2, do01_absorber_off;
+        WaitTime 0.5;
+    ENDPROC
+
+    ! ================================================================
+    ! base_to_con
+    !   Pick base panel -> place on conveyor -> reverse + cylinder
+    ! ================================================================
+    PROC base_to_con()
+        VAR num Zpick;
+        Zpick := (BpC - 1) * HoB;
+        ! -- Pick --
+        MoveJ pSafe1, v200, z50, tool1;
+        MoveJ Offs(pBasebox, 0, 0, StandB + AppClear), v200, z50, tool1;
+        MoveL Offs(pBasebox, 0, 0, Zpick), v50, fine, tool1;
+        absorber_on;
+        MoveL Offs(pBasebox, 0, 0, StandB + AppClear), v50, z50, tool1;
+        ! -- Place --
+        MoveJ Offs(pCon_BB, 0, 0, AppClear), v200, z50, tool1;
+        MoveL pCon_BB, v50, fine, tool1;
+        absorber_off;
+        MoveL Offs(pCon_BB, 0, 0, AppClear), v200, z50, tool1;
+        MoveJ pSafe1, v200, z50, tool1;
+        BpC := BpC - 1;
+        ! -- Conveyor reverse + cylinder positioning --
+        SetDO do09_conv_bwd, 1;
+        WaitTime 1;
+        PulseDO\PLength:=1, do10_cyl_on;
+        WaitDI di10_base_set, 1;
+        SetDO do09_conv_bwd, 0;
+    ENDPROC
+
+    ! ================================================================
+    ! temp_wall_to_con  (Phase 2 test -- all panels from pWallbox1)
+    ! ================================================================
+    PROC temp_wall_to_con()
+        VAR num Zpick;
+        VAR num Zplace;
+        Zplace := stack_cnt * ToP;
+        MoveJ pSafe2, v200, z50, tool1;
+        Zpick := (WpC1 - 1) * ToP;
+        MoveJ Offs(pWallbox1, 0, 0, StandW + AppClear), v200, z50, tool1;
+        MoveL Offs(pWallbox1, 0, 0, Zpick), v50, fine, tool1;
+        absorber_on;
+        MoveL Offs(pWallbox1, 0, 0, StandW + AppClear), v50, z50, tool1;
+        WpC1 := WpC1 - 1;
+        MoveJ Offs(pCon_Wall1, 0, 0, AppClear), v200, z50, tool1;
+        MoveL Offs(pCon_Wall1, 0, 0, Zplace), v50, fine, tool1;
+        absorber_off;
+        MoveL Offs(pCon_Wall1, 0, 0, Zplace + AppClear), v200, z50, tool1;
+        MoveJ pSafe1, v200, z50, tool1;
+        stack_cnt := stack_cnt + 1;
+    ENDPROC
+
+    ! ================================================================
+    ! wall_to_con  (Phase 2 full -- color-based routing)
+    ! ================================================================
+    PROC wall_to_con()
+        VAR num Zpick;
+        VAR num Zplace;
+        Zplace := stack_cnt * ToP;
+        MoveJ pSafe2, v200, z50, tool1;
+        IF stack_cnt = 1 THEN
+            Zpick := (WpC1 - 1) * ToP;
+            MoveJ Offs(pWallbox1, 0, 0, StandW + AppClear), v200, z50, tool1;
+            MoveL Offs(pWallbox1, 0, 0, Zpick), v50, fine, tool1;
+            absorber_on;
+            MoveL Offs(pWallbox1, 0, 0, StandW + AppClear), v50, z50, tool1;
+            WpC1 := WpC1 - 1;
+            MoveJ Offs(pCon_Wall1, 0, 0, AppClear), v200, z50, tool1;
+            MoveL Offs(pCon_Wall1, 0, 0, Zplace), v50, fine, tool1;
+            absorber_off;
+            MoveL Offs(pCon_Wall1, 0, 0, Zplace + AppClear), v200, z50, tool1;
+            MoveJ pSafe2, v200, z50, tool1;
+        ELSEIF stack_cnt = 2 OR stack_cnt = 3 THEN
+            Zpick := (WpC2 - 1) * ToP;
+            MoveJ Offs(pWallbox2, 0, 0, StandW + AppClear), v200, z50, tool1;
+            MoveL Offs(pWallbox2, 0, 0, Zpick), v50, fine, tool1;
+            absorber_on;
+            MoveL Offs(pWallbox2, 0, 0, StandW + AppClear), v50, z50, tool1;
+            WpC2 := WpC2 - 1;
+            MoveJ Offs(pCon_Wall2, 0, 0, AppClear), v200, z50, tool1;
+            MoveL Offs(pCon_Wall2, 0, 0, Zplace), v50, fine, tool1;
+            absorber_off;
+            MoveL Offs(pCon_Wall2, 0, 0, Zplace + AppClear), v200, z50, tool1;
+            MoveJ pSafe2, v200, z50, tool1;
+        ELSEIF stack_cnt = 4 THEN
+            Zpick := (WpC3 - 1) * ToP;
+            MoveJ Offs(pWallbox3, 0, 0, StandW + AppClear), v200, z50, tool1;
+            MoveL Offs(pWallbox3, 0, 0, Zpick), v50, fine, tool1;
+            absorber_on;
+            MoveL Offs(pWallbox3, 0, 0, StandW + AppClear), v50, z50, tool1;
+            WpC3 := WpC3 - 1;
+            MoveJ Offs(pCon_Wall3, 0, 0, AppClear), v200, z50, tool1;
+            MoveL Offs(pCon_Wall3, 0, 0, Zplace), v50, fine, tool1;
+            absorber_off;
+            MoveL Offs(pCon_Wall3, 0, 0, Zplace + AppClear), v200, z50, tool1;
+            MoveJ pSafe1, v200, z50, tool1;
+        ENDIF
+        IF stack_cnt = 4 THEN
+            stack_cnt := 1;
+        ELSE
+            stack_cnt := stack_cnt + 1;
+        ENDIF
+    ENDPROC
+
+    ! ================================================================
+    ! ceil_to_con
+    !   Pick ceiling panel -> place as lid on conveyor stack
+    ! ================================================================
+    PROC ceil_to_con()
+        VAR num Zpick;
+        Zpick := (CpC - 1) * HoC;
+        ! -- Pick --
+        MoveJ pSafe1, v200, z50, tool1;
+        MoveJ Offs(pCeilbox, 0, 0, StandC + AppClear), v200, z50, tool1;
+        MoveL Offs(pCeilbox, 0, 0, Zpick), v50, fine, tool1;
+        absorber_on;
+        MoveL Offs(pCeilbox, 0, 0, StandC + AppClear), v50, z50, tool1;
+        ! -- Place --
+        MoveJ Offs(pCon_Ceil, 0, 0, AppClear), v200, z50, tool1;
+        MoveL Offs(pCon_Ceil, 0, 0, 0), v50, fine, tool1;
+        absorber_off;
+        MoveL Offs(pCon_Ceil, 0, 0, AppClear), v200, z50, tool1;
+        MoveJ pSafe1, v200, z50, tool1;
+        CpC := CpC - 1;
+    ENDPROC
+
+ENDMODULE

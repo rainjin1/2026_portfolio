@@ -1,0 +1,41 @@
+MODULE BinToMagazine
+	CONST robtarget home:=[[347.61,2.21,610.57],[0.000227115,0.0322408,-0.99948,-0.000336778],[0,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+	TASK PERS tooldata tool1:=[TRUE,[[0,0,110],[1,0,0,0]],[0.2,[0,0,50],[1,0,0,0],0,0,0]];
+	CONST robtarget p_grip_ready:=[[-33.51,-547.34,43.62],[0.000221245,0.0322257,-0.999481,-0.000373597],[-2,-1,-2,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+    CONST robtarget p_grip:=[[-33.51,-547.35,18.63],[0.000219418,0.0322193,-0.999481,-0.000378926],[-2,-1,-2,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+	CONST robtarget p_release_ready:=[[611.73,-434.43,570.12],[0.00029299,0.0322565,-0.999479,-0.000420062],[-1,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+    CONST robtarget p_release:=[[611.74,-434.43,344.00],[0.000279621,0.0322524,-0.99948,-0.000408306],[-1,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+    CONST robtarget p_safe1:=[[365.82,-363.55,506.69],[0.000206377,0.0322376,-0.99948,-0.000377234],[-1,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+    CONST num off_x:= 110;
+    CONST num off_y:= 110;
+
+PROC MAIN()
+    AccSet 1,1;
+    MoveJ home, v200, z50, tool1;
+    FOR i FROM 1 TO 3 DO
+        FOR j FROM 1 TO 2 DO
+            PickPart i, j;
+            PlacePart;
+        ENDFOR
+    ENDFOR
+ENDPROC
+
+PROC PickPart(num i, num j)
+    MoveJ Offs(p_grip_ready, (i-1)*off_x, (j-1)*off_y, 0), v200, fine, tool1;
+    MoveL Offs(p_grip,       (i-1)*off_x, (j-1)*off_y, 0), v50,  fine, tool1;
+    PulseDO\PLength:=0.2, do01_grip_off;
+    WaitTime 0.3;
+    MoveL Offs(p_grip_ready, (i-1)*off_x, (j-1)*off_y, 0), v50,  fine, tool1;
+ENDPROC
+
+PROC PlacePart()
+    MoveJ p_safe1,         v200, z50,  tool1;
+    MoveJ p_release_ready, v200, fine, tool1;
+    MoveL p_release,       v50,  fine, tool1;
+    PulseDO\PLength:=0.2, do00_grip_on;
+    WaitTime 1;
+    MoveJ p_release_ready, v50,  fine, tool1;
+    MoveJ home,            v200, z50,  tool1;
+ENDPROC
+
+ENDMODULE
