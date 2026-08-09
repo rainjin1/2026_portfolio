@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 런타임 DB
+*.db
+
+# 영상 (용량 초과)
+영상/
+
+# Windows
+desktop.ini
+Thumbs.db
+
+# 압축파일
+*.zip
+
+# 한글/오피스 문서 (GitHub에서 열리지 않음, 용량 과다)
+*.hwp
+*.pptx
+*.docx
+*.xlsx
