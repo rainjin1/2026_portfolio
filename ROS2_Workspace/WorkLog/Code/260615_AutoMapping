@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+import rclpy
+from rclpy.node import Node
+from geometry_msgs.msg import Twist
+from sensor_msgs.msg import LaserScan
+import math
+
+class RightHandWallFollower(Node):
+    def __init__(self):
+        super().__init__('right_hand_wall_follower')
+
+        self.cmd_vel_pub = self.create_publisher(Twist, 'cmd_vel', 10)
+        lidar_qos = rclpy.qos.QoSProfile(
+            reliability=rclpy.qos.ReliabilityPolicy.BEST_EFFORT,
+            history=rclpy.qos.HistoryPolicy.KEEP_LAST,
+            depth=5
+        )
+        self.scan_sub = self.create_subscription(LaserScan, '/scan', self.scan_callback, lidar_qos)
+
+        self.timer = self.create_timer(0.1, self.control_loop)
+
+        self.scan_msg = None
+        self.state = "FOLLOW_WALL"
+
+        # --- 파라미터 ---
+        self.DESIRED_WALL_DIST = 0.25
+        self.FRONT_CRITICAL = 0.28
+        self.RIGHT_OPEN_DIST = 0.55
+        self.RIGHT_REJOIN_DIST = 0.40
+        self.MAX_LINEAR = 0.10
+        self.MAX_ANGULAR = 0.45
+
+        self.get_logger().info("Right-hand wall follower started.")
+
+    def scan_callback(self, msg):
+        self.scan_msg = msg
+
+    def angle_to_index(self, angle_deg):
+        """각도를 LaserScan 인덱스로 변환"""
+        if not self.scan_msg:
+            return 0
+        angle_rad = math.radians(angle_deg)
+        idx = int((angle_rad - self.scan_msg.angle_min) / self.scan_msg.angle_increment)
+        idx = max(0, min(idx, len(self.scan_msg.ranges)-1))
+        return idx
+
+    def get_region_distance(self, start_deg, end_deg):
+        """각도 범위 평균 거리 반환"""
+        if not self.scan_msg:
+            return 3.5
+        indices = []
+        if start_deg <= end_deg:
+            indices = [self.angle_to_index(a) for a in range(start_deg, end_deg+1)]
+        else:
+            indices = [self.angle_to_index(a) for a in range(start_deg, 360)] + \
+                      [self.angle_to_index(a) for a in range(0, end_deg+1)]
+        valid = [self.scan_msg.ranges[i] for i in indices if 0.05 < self.scan_msg.ranges[i] < 3.5]
+        return sum(valid)/len(valid) if valid else 3.5
+
+    def control_loop(self):
+        if not self.scan_msg:
+            return
+
+        twist = Twist()
+
+        # --- 거리 측정 ---
+        front_dist = self.get_region_distance(350, 10)
+        right_front_dist = self.get_region_distance(300, 340)
+        right_side_dist = self.get_region_distance(250, 290)
+
+        # --- 상태 유지 로직 ---
+        if self.state == "TURN_RIGHT":
+            # 오른쪽 벽과 합류하면 FOLLOW_WALL
+            if right_side_dist < self.RIGHT_REJOIN_DIST:
+                self.state = "FOLLOW_WALL"
+            else:
+                twist.linear.x = 0.04
+                twist.angular.z = -0.50
+                self.cmd_vel_pub.publish(twist)
+                return
+
+        elif self.state == "TURN_LEFT":
+            # 정면이 열리면 FOLLOW_WALL
+            if front_dist > 0.45:
+                self.state = "FOLLOW_WALL"
+            else:
+                twist.linear.x = 0.0
+                twist.angular.z = 0.50
+                self.cmd_vel_pub.publish(twist)
+                return
+
+        # --- 상태 결정 (우수법) ---
+        if front_dist < self.FRONT_CRITICAL:
+            self.state = "TURN_LEFT"
+        elif right_side_dist > self.RIGHT_OPEN_DIST and right_front_dist > self.RIGHT_OPEN_DIST:
+            self.state = "TURN_RIGHT"
+        else:
+            self.state = "FOLLOW_WALL"
+
+        # --- FOLLOW_WALL 제어 ---
+        if self.state == "FOLLOW_WALL":
+            wall_angle_error = right_front_dist - right_side_dist
+            distance_error = right_side_dist - self.DESIRED_WALL_DIST
+
+            angular = distance_error * 1.5 + wall_angle_error * 1.2
+            angular = max(min(angular, self.MAX_ANGULAR), -self.MAX_ANGULAR)
+
+            linear = 0.05 if abs(angular) > 0.25 else self.MAX_LINEAR
+
+            twist.linear.x = linear
+            twist.angular.z = angular
+
+        elif self.state == "TURN_RIGHT":
+            twist.linear.x = 0.04
+            twist.angular.z = -0.50
+        elif self.state == "TURN_LEFT":
+            twist.linear.x = 0.0
+            twist.angular.z = 0.50
+
+        self.cmd_vel_pub.publish(twist)
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = RightHandWallFollower()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stop = Twist()
+        node.cmd_vel_pub.publish(stop)
+        node.destroy_node()
+        rclpy.shutdown()
+
+if __name__ == '__main__':
+    main()

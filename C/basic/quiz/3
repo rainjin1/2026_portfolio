@@ -1,0 +1,23 @@
+두 변수를 입력받고, 출력할때 변수의 순서가 바뀌게 출력하라. 하지만 변수를 정의한 a b의 순서를 바꿔서 출력하진 마시오.
+
+#define _CRT_SECURE_NO_WARNINGS 
+#include <stdio.h>
+#include <string.h>
+int main()
+{
+	int a=0, b=0, c=0;
+	printf("두 변수를 입력하겠습니다. 첫번째 변수를 입력하세요 : ");
+	scanf("%d", &a);
+	printf("첫번째 변수는 %d 입니다.\n", a);
+
+	printf("두번째 변수를 입력하세요 :");
+	scanf("%d", &b);
+	printf("두번째 변수는 %d입니다. \n", b);
+
+	printf("순서를 바꿔 출력합니다\n");
+	a = c;
+	a = b;
+	b = c;
+	printf("%d %d", a, b);
+	return 0;
+}

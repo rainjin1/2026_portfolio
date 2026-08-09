@@ -1,0 +1,25 @@
+#define _CRT_SECURE_NO_WARNINGS 
+#include <stdio.h>
+int main()
+{
+	/*int ary[10];
+	for (int i =0; i < 10; i++)
+	{
+		ary[i] = i+1;
+		printf("%d", ary[i]);
+	}
+	for (int i = 0; i < 10; i++)
+	{
+		if (i%2==1)
+		{
+			printf("\n%d", ary[i]);
+		}
+	}*/
+	//여기서 if 안쓰고 그냥 int i=1; 에서 i<10; i+=2하고 printf("%d", score[i]); 해버리면? 10번돌필요도없이 5번만돌고된다! 최적화!
+
+	char str[80] = "applejam";
+
+	printf("%s\n%d", str, strlen(str));
+
+	return 0;
+}

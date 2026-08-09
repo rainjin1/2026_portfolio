@@ -1,0 +1,110 @@
+import cv2
+import random
+import time
+import numpy as np
+import math
+import pygame  # [추가] 소리 재생을 위해 필요
+
+# ------------------ (중략: Figures, Ball, Square, Triangle 클래스는 기존과 동일) ------------------
+# ... 기존 클래스 코드들 ...
+
+# ------------------ 메인 게임 엔진 ------------------
+def main():
+    # [추가] pygame 오디오 초기화
+    pygame.mixer.init()
+    
+    # [수정] 음악 파일 경로를 여기에 넣으세요! (예: "bgm.mp3" 또는 "music.wav")
+    bgm_file = "your_music_file.mp3" 
+    
+    try:
+        pygame.mixer.music.load(bgm_file)
+        pygame.mixer.music.set_volume(0.5) # 볼륨 설정 (0.0 ~ 1.0)
+    except Exception as e:
+        print(f"음악 파일을 찾을 수 없습니다: {e}")
+
+    cap = cv2.VideoCapture(0)
+    w, h = 640, 480
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+
+    menu_items = [Ball(160, 100, (0, 0, 255), 30), Square(320, 100, (0, 255, 0), 30),
+                  Triangle(480, 100, (255, 0, 0), 30)]
+    for m in menu_items: m.lifetime = 99999
+
+    pre_gray, game_started, selected_item = None, False, None
+    shapes, score, spawn_time, start_time = [], 0, 0, 0
+    spawn_delay = 0.5
+    music_playing = False # 음악 재생 상태 확인용
+
+    while True:
+        ret, frame = cap.read()
+        if not ret: break
+        frame = cv2.flip(frame, 1)
+        gray = cv2.GaussianBlur(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (11, 11), 0)
+
+        if pre_gray is None:
+            pre_gray = gray
+            continue
+
+        diff = cv2.absdiff(pre_gray, gray)
+        _, thresh = cv2.threshold(diff, 35, 255, cv2.THRESH_BINARY)
+
+        if not game_started:
+            cv2.putText(frame, "SELECT YOUR SHAPE!", (190, 50), 2, 0.8, (255, 255, 255), 2)
+            for item in menu_items:
+                if item.is_touched(thresh):
+                    selected_item, game_started = item, True
+                    spawn_time = start_time = time.time()
+                    
+                    # [추가] 게임 시작 시 음악 재생 (-1은 무한 반복)
+                    if not music_playing:
+                        pygame.mixer.music.play(-1)
+                        music_playing = True
+                        
+                item.draw(frame)
+        else:
+            # (기존 게임 로직과 동일)
+            if time.time() - spawn_time > spawn_delay:
+                size = random.choice([18, 24, 30])
+                sx, sy = get_safe_point(w, h, size)
+                is_bad = random.random() < 0.15
+                color = (0, 0, 0) if is_bad else selected_item.original_color
+
+                if isinstance(selected_item, Ball): shapes.append(Ball(sx, sy, color, size, is_bad))
+                elif isinstance(selected_item, Square): shapes.append(Square(sx, sy, color, size, is_bad))
+                elif isinstance(selected_item, Triangle): shapes.append(Triangle(sx, sy, color, size, is_bad))
+                spawn_time = time.time()
+
+            for shape in shapes[:]:
+                shape.draw(frame)
+                if shape.is_touched(thresh):
+                    score += -shape.score_value if shape.is_bad else shape.score_value
+                    shapes.remove(shape)
+                elif shape.is_expired():
+                    shapes.remove(shape)
+
+            rem = max(0, 30 - int(time.time() - start_time))
+            cv2.putText(frame, f"SCORE: {score}", (20, 45), 2, 1, (255, 255, 255), 2)
+            cv2.putText(frame, f"TIME: {rem}s", (510, 45), 2, 0.8, (0, 255, 255), 2)
+
+            if rem <= 0:
+                # [추가] 시간 종료 시 음악 정지
+                pygame.mixer.music.stop()
+                
+                cv2.rectangle(frame, (180, 200), (460, 280), (0, 0, 0), -1)
+                cv2.putText(frame, "TIME UP!", (235, 255), 2, 1.5, (0, 255, 0), 3)
+                cv2.imshow("Shape Game", frame)
+                cv2.waitKey(3000)
+                break
+
+        cv2.imshow("Shape Game", frame)
+        pre_gray = gray
+        if cv2.waitKey(1) == 27: break
+
+    # [추가] 종료 시 리소스 해제
+    pygame.mixer.quit()
+    cap.release()
+    cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    main()

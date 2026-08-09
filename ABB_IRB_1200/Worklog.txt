@@ -1,0 +1,26 @@
+ABB IRB 1200 Project — 작업 일지
+==================================
+
+■ 작업 일지 작성 지침
+- 작업 날짜마다 [YYYY-MM-DD] 헤더 추가
+- 그날 한 작업을 짧게 bullet(-)로 기록 (1~2줄 이내)
+- 새 날짜 항목은 파일 맨 아래에 추가
+
+■ GitHub 백업 명령어 (ABB_Project 폴더에서 실행, 한 줄)
+  git clone https://github.com/rainjin1/2026_portfolio.git C:\Temp\pb && copy README.md "C:\Temp\pb\ABB_IRB_1200\" && copy Worklog.txt "C:\Temp\pb\ABB_IRB_1200\" && copy docs\*.md "C:\Temp\pb\ABB_IRB_1200\docs\" && cd /d C:\Temp\pb && git add ABB_IRB_1200/ && git commit -m "Update [날짜]" && git push origin main && cd C:\ && rmdir /s /q C:\Temp\pb
+
+==================================
+
+[2026-06-30]
+- ABB IRB 1200 멀티툴 엔드이펙터 프로젝트 기획 수립
+- 로봇 스펙 조사: 페이로드, 툴플랜지 규격, 축 범위, 공압 포트
+- 브라켓 설계 방향 결정: 십자형, PETG, heat-set insert, 팔 200mm 이내
+- 돌출 메커니즘 결정: 캠+LM가이드+스프링 복귀 (패시브 기계식)
+- RAPID 기초 학습: MoveL/J/AbsJ, I/O 제어, FOR/WHILE, 인터럽트
+- 워크스페이스 설정 및 문서 파일 5개 작성 (스펙/RAPID/설계/체크리스트)
+- GitHub ABB_IRB_1200 폴더 백업
+
+[2026-07-01]
+- 6개 공작물 3x2 픽앤플레이스 RAPID 프로그램 작성
+- bin_to_magazine.mod.txt 저장 (rapid/ 폴더)
+

@@ -1,0 +1,14 @@
+#include <stdio.h>
+char ch = 'A';
+int main(void)
+{
+    char *dessert = "apple"; //문자열은 스택이 아닌 문자열영역에 저장됨.
+    dessert = "banana";
+    printf("%s\n", dessert);
+    printf("%p\n", &ch);
+    int a = 10;
+    double b = 3.14;
+    printf("%p\n", &b);
+    printf("%p\n", &a);
+    return 0;
+}

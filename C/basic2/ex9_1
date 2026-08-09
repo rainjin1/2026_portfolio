@@ -1,0 +1,15 @@
+#include <stdio.h>
+
+
+int main()
+{
+    int a;
+    int g;
+    double b;
+    char str[80] = "Hello!";
+    printf("int형 변수의 주소: %u , %p \n", &a, &a);
+    printf("double형 변수의 주소 : %u, %p \n", &b, &b);
+    printf("\n\n global형 변수의 주소 :%u. %p\n", &g, &g);
+    printf("문자열 변수의 주소 : %u, %p\n", str, str);
+    return 0;
+}

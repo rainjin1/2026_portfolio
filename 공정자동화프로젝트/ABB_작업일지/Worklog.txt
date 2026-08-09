@@ -1,0 +1,127 @@
+ABB IRB 1200 Project — 작업 일지
+==================================
+
+■ 작업 일지 작성 지침
+- 작업 날짜마다 [YYYY-MM-DD] 헤더 추가
+- 그날 한 작업을 짧게 bullet(-)로 기록 (1~2줄 이내)
+- 새 날짜 항목은 파일 맨 아래에 추가
+- 작성 언어: 한글 기본, 파일명·명령어·전문용어(RAPID 명령어, I/O 신호명 등)는 영어 유지
+
+■ GitHub 백업 명령어 (PowerShell, ABB_Project 폴더에서 실행, 한 줄)
+  cd "C:\Users\user\Desktop\Jin\ABB_Project"; git clone https://github.com/rainjin1/2026_portfolio.git C:\Temp\pb; md "C:\Temp\pb\ABB_IRB_1200\rapid"; copy README.md "C:\Temp\pb\ABB_IRB_1200\"; copy Worklog.txt "C:\Temp\pb\ABB_IRB_1200\"; copy docs\*.md "C:\Temp\pb\ABB_IRB_1200\docs\"; copy rapid\*.txt "C:\Temp\pb\ABB_IRB_1200\rapid\"; cd C:\Temp\pb; git add ABB_IRB_1200/; git commit -m "Update [날짜]"; git push origin main; cd C:\; Remove-Item -Recurse -Force C:\Temp\pb
+
+==================================
+
+[2026-06-30]
+- ABB IRB 1200 멀티툴 엔드이펙터 프로젝트 기획 수립
+- 로봇 스펙 조사: 페이로드, 툴플랜지 규격, 축 범위, 공압 포트
+- 브라켓 설계 방향 결정: 십자형, PETG, heat-set insert, 팔 200mm 이내
+- 돌출 메커니즘 결정: 캠+LM가이드+스프링 복귀 (패시브 기계식)
+- RAPID 기초 학습: MoveL/J/AbsJ, I/O 제어, FOR/WHILE, 인터럽트
+- 워크스페이스 설정 및 문서 파일 5개 작성 (스펙/RAPID/설계/체크리스트)
+- GitHub ABB_IRB_1200 폴더 백업
+
+[2026-07-01]
+- 6개 공작물 3x2 픽앤플레이스 RAPID 프로그램 작성
+- bin_to_magazine.mod.txt 저장 (rapid/ 폴더)
+
+[2026-07-02]
+- 픽앤플레이스 + 컨베이어 분류 전체 구조 재작성 (WHILE 기반)
+- RobotStudio 호환을 위해 주석 영어로 전환
+- RETURN으로 에러 후 재시작 로직 추가
+- bin_to_magazine_0702.mod.txt 저장
+
+[2026-07-07]
+- AutoSorting.mod.txt: TRAP 인터럽트(di09) 추가 — StorePath/RestoPath/StartMove 패턴
+  - 버그 2개 확인: p_home → home 수정 필요, VAR intnum interrupt_sign 선언 누락
+- Work Object(wobjdata) 3점 티칭 학습 (FlexPendant 절차, RAPID 연동)
+- MoveAbsJ + CJointT() 조합으로 축6만 회전하는 Switch_Tool 구조 검토
+- 신규 팀 프로젝트 기획: 모듈형 주택 벽판 자동 분류 시스템 (4인)
+  - 파이프라인 확정: Phase1 색별 분류(랜덤박스→색별적재함) → Phase2 컨베이어 배출
+  - 배출 시퀀스 확정: 베이스 → 흰벽 → 갈벽×2 → 파벽 → 천장
+  - 변수/상수/프로시저 구조 설계 완료 (Camera_Classify는 STUB, 추후 소켓으로 교체)
+  - 카메라 통신(TCP/IP Socket) 구현은 다음 주 별도 인원 배정 예정
+  - WallPanel_Sorting_Proposal.pdf 작성 완료 (docs/ 폴더)
+
+[2026-07-08]
+- WallSorting.mod.txt 초안 작성 완료 (rapid/ 폴더)
+  - 1패널 기준 좌표 철학 적용: pBox+(count-1)*unit (불필요한 S_Zoffs 상수 제거)
+  - pCon = 컨베이어 면 기준, Place_to_Con(suck_offs): TCP=pCon+HoL+suck_offs 공식 통일
+  - Phase1_Sort: WHILE 루프, 소스박스→색별 적재함, Camera_Classify STUB
+  - Phase2_Output: 고정 시퀀스 (베이스→흰벽→갈벽×2→파벽→천장), HoL 누적
+  - Pick_Basepanel / Pick_Wallpanel(color) / Pick_Ceilingpanel 파라미터 프로시저
+  - absorber_on/off, Conveyor_Advance, Camera_Classify(stub) 뼈대 포함
+
+[2026-07-14]
+- WallSorting_ENG_20260714.mod.txt: 영문 주석 버전 전환, 좌표 재정리
+- Phase1_Sort_ENG_20260714.mod.txt: Phase1 분류 로직 영문 독립 파일로 분리
+
+[2026-07-15]
+- WallSorting_ENG_20260715.mod.txt: 실기기 피드백 반영, 동작 시퀀스 수정
+
+[2026-07-16]
+- WallSorting_ENG_20260716.mod.txt: 오류 수정 및 현장 테스트
+
+[2026-07-20]
+- WallSorting_ROB1_20260720.mod.txt: ROB1(R1) 전용 버전 분리
+- WallSorting_Comm_20260720.mod.txt: R1 ↔ 서버 TCP/IP 소켓 통신 코드 추가 (실기기 연동 시작)
+
+[2026-07-21]
+- 260721_1조 발표: 프로젝트 중간 발표 진행
+- 시연 영상 촬영 (분류·적재·판별)
+
+[2026-07-22]
+- Python TCP 서버 초안 작성 (server_01_0722.py): R1 소켓 수신, 기본 핸들러 구조
+
+[2026-07-23]
+- WallSorting_Comm_20260723.mod: RAPID 소켓 통신 최종 버전
+- MultiPick.mod: 멀티픽 동작 모듈 작성
+
+[2026-07-24]
+- server_02_0724.py: 멀티클라이언트 구조, 장비별 수신 스레드 분리
+
+[2026-07-27]
+- AMR 통합 MES 프로젝트 시작: LD-90 AMR + ABB IRB1200 × 2 + 미쓰비시 PLC × 2 통합 서버 설계
+- gateway_server.py: accept_thread(IP 기반 장비 식별), message_queue 기반 단일 dispatch 구조 확립
+- AMR ARCL 프로토콜 연동: executeMacro/goto 명령, 패스워드 인증 자동 처리, 재접속 루프
+
+[2026-07-28]
+- device_recv_thread(개행 기반) / plc_recv_thread(20B 고정 프레임) 이원화
+- amr_thread: 서버가 AMR에 아웃바운드 접속, 인증 dump 스킵 처리
+- HEARTBEAT_TIMEOUT = 180s 설정, PLC 3분 무통신 시 heartbeat 재송신
+
+[2026-07-29]
+- db.py: SQLite MES DB 모듈 작성 (orders, inventory, process_log, inspection 테이블)
+- 주문 파이프라인 단계 설계: PENDING → SORTING → STACKING → ASSEMBLY → INSPECTION → OUTPUT_TRANSFER → DONE
+- 색상 빈 배정 로직: WpC 빈 우선순위(Y→1, W→2/3/4, P→5/6), BpC/CpC 재고 많은 쪽 우선
+
+[2026-07-30]
+- command_center_20260730.py: SM 상태 머신 + decide() 결정 엔진 통합 (gateway_server에서 리팩터)
+- decide() 우선순위 확정: 0=AMR화물비우기, 1=분류, 2=판별, 3=주문별진행, 4=신규진입, 5=AMR유휴
+- 판별 4면 회전 로직 구현 (_decide_inspection): PLC2 회전명령 ↔ 완료신호 핸드셰이크
+- P2 프로토콜 전면 재설계: S prefix(서버→PLC2) / S_ prefix(PLC2→서버) 체계 확정
+
+[2026-07-31]
+- station_output[2] 선점 방식 도입: 명령 발행 시점 논리 선점, PLC2 "03" 수신 시 확정
+  - PLC2 "03"(물품도착)과 TransferToOutputConvDone 신호 순서 역전 문제 선제 해결
+  - TransferToOutputConvDone 역할 축소: R2 state 초기화만 담당
+- Transfer_to_Transfer_Available + station_output[2] 이중 가드 설계
+
+[2026-08-03]
+- amr_ard_complete 플래그 제거 → recv_count 기반 수령 완료 로직으로 통합
+- station_amr_conv[3] 배열 추가: AMR 컨베이어 적재 주문 추적 (station_output과 병렬)
+- "받음" 수신 시 station_output → station_amr_conv 슬롯 이동, 콘솔 수령확인 시 station_amr_conv 정리
+- pickup_total 동적 갱신: PLC2 "03" 수신 시 station[0][1] 모두 점유면 += 1 (3번째 물품 포함)
+
+[2026-08-04]
+- 웹 기반 고객 주문 폼 HTML 작성 (order_form.html)
+  - 4×4 격자 탑뷰 레이아웃, 도로 y1/y2 사이 배치, 좌하단 (0,0) 좌표계
+  - 층수 선택 (1층 선행 조건 검증), 벽 색상 4방향 독립 선택 (W/Y/P)
+- Cowork artifact로 주문 폼 등록
+
+[2026-08-05]
+- 서버 아키텍처 요약 문서 작성 (architecture_summary.md): 이력서용 포트폴리오 정리
+  - 이종 장비 통합 설계, 이중 가드 주석, 주문 도메인 섹션 + 주문 화면 스크린샷 첨부
+- GitHub 포트폴리오 리포(rainjin1/2026_portfolio) 공정자동화프로젝트 폴더 push
+- Worklog.txt 업데이트
+

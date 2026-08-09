@@ -1,0 +1,274 @@
+MODULE WallSorting
+!===================================================================
+! 프로젝트  : 모듈형 주택 벽판 자동 적재 시스템
+! 파일      : WallSorting_KOR_20260708.mod.txt
+! 작성일    : 2026-07-08
+! 버전      : 1.0 — 구조 설계 초안 (좌표·상수는 티칭 후 확정)
+! 내용      : Phase2 컨베이어 배출 전용
+!             	Phase1(카메라 색상 분류)은 추후 별도 모듈 추가 예정
+!===================================================================
+
+    ! ================================================================
+    ! 툴 데이터
+    !   TCP    : 플랜지 기준 Z 방향 173 mm (X, Y 오프셋 없음)
+    !   무게   : 0.1 kg
+    !   무게중심 : Z = 130 mm
+    ! ================================================================
+    TASK PERS tooldata tool1 := [TRUE,[[0,0,173],[1,0,0,0]],
+                                       [0.1,[0,0,130],[1,0,0,0],0,0,0]];
+
+    ! ================================================================
+    ! 위치 좌표 — 티칭 후 실제 값으로 교체
+    !
+    ! [적재함 좌표 공통 주의사항]
+    !   모든 적재함 좌표 = 1개 들어있을때 흡착 접촉 좌표
+    !   흡착기 스프링을 이용해 증분 이동으로 약 3~5mm 눌러 티칭
+    !   → 1패널 기준이므로 n패널일 때 오프셋 = (n-1) * 단위높이
+    !
+    ! [컨베이어 좌표]
+    !   베이스패널 1개가 올려진 상태의 TCP 위치
+    !   벽패널·천장패널 플레이스 오프셋 기준점
+    ! ================================================================
+    CONST robtarget pBasebox  := [[0,0,0],[1,0,0,0],[0,0,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]; ! 베이스패널 적재함 1패널 기준
+    CONST robtarget pCeilbox  := [[0,0,0],[1,0,0,0],[0,0,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]; ! 천장패널 적재함 1패널 기준
+    CONST robtarget pWhitebox := [[0,0,0],[1,0,0,0],[0,0,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]; ! 하양벽 적재함 1패널 기준
+    CONST robtarget pBluebox  := [[0,0,0],[1,0,0,0],[0,0,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]; ! 파랑벽 적재함 1패널 기준
+    CONST robtarget pBrownbox := [[0,0,0],[1,0,0,0],[0,0,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]; ! 갈색벽 적재함 1패널 기준
+    CONST robtarget pSafe1    := [[0,0,0],[1,0,0,0],[0,0,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]; ! 안전좌표1 : 베이스·천장 적재함 주변
+    CONST robtarget pSafe2    := [[0,0,0],[1,0,0,0],[0,0,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]; ! 안전좌표2 : 벽패널 적재함 주변
+    CONST robtarget pSafe3    := [[0,0,0],[1,0,0,0],[0,0,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]; ! 안전좌표3 : 전체 안전위치
+    CONST robtarget pCon      := [[0,0,0],[1,0,0,0],[0,0,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]; ! 컨베이어 베이스패널 플레이스 기준
+
+    ! ================================================================
+    ! 물리 상수 — 실측 후 입력 (단위: mm)
+    !
+    !   HoB      : 베이스패널 전체 높이
+    !              → 픽 오프셋 공식에 사용: (BpC-1)*HoB
+    !   HoC      : 천장패널 굵기 = 높이 (같은 값)
+    !              → 픽 오프셋 및 컨베이어 플레이스 오프셋에 사용
+    !   ToP      : 벽패널 굵기 = 2mm (고정, 변경 불필요)
+    !   StandB/C/W : 각 적재함 지지대 높이
+    !              → 리프트 후 지지대 상단 + AppClear 만큼 올려야 수평 이동 가능
+    !   AppClear : 수평 이동 전 추가 여유 높이
+    ! ================================================================
+    CONST num HoB      := 0;    ! 베이스패널 전체 높이 (실측 후 입력)
+    CONST num HoC      := 0;    ! 천장패널 굵기·높이  (실측 후 입력)
+    CONST num ToP      := 2;    ! 벽패널 굵기 — 고정값
+    CONST num StandB   := 0;    ! 베이스패널 적재함 지지대 높이 (실측 후 입력)
+    CONST num StandC   := 0;    ! 천장패널 적재함 지지대 높이  (실측 후 입력)
+    CONST num StandW   := 0;    ! 벽패널 적재함 지지대 높이    (실측 후 입력)
+    CONST num AppClear := 50;   ! 접근·이탈 여유 높이 (기본 50mm, 필요시 조정)
+
+    ! ================================================================
+    ! 변수 — 가동 전 수동 입력 후 실행
+    !
+    !   BpC, CpC    : 베이스·천장 패널 수량 (픽 오프셋 계산용, 사용할 때마다 -1)
+    !   WpC/BlpC/BrpC : 각 색 벽패널 수량 (마찬가지로 픽 후 -1)
+    !   stack_cnt   : 컨베이어에 현재 쌓인 벽 수량 카운터
+    !                 초기값=1, 최대=4, 4 완료 후 1로 초기화
+    !                 값에 따라 픽 색상과 플레이스 높이 동시 결정
+    ! ================================================================
+    VAR num BpC       := 0;     ! 베이스패널 수량
+    VAR num CpC       := 0;     ! 천장패널 수량
+    VAR num WpC       := 0;     ! 하양(White) 벽패널 수량
+    VAR num BlpC      := 0;     ! 파랑(Blue)  벽패널 수량
+    VAR num BrpC      := 0;     ! 갈색(Brown) 벽패널 수량
+    VAR num stack_cnt := 1;     ! 벽 적재 카운터 (1~4)
+
+    ! ================================================================
+    ! PROC main
+    !   1. 전체 안전위치(pSafe3) 이동
+    !   2. 베이스패널 컨베이어 안착
+    !   3. 벽패널 4개 순차 적재 (FOR 루프 4회 → wall_to_con 호출)
+    !   4. 천장패널 안착 → 1세트 완성
+    !   5. 컨베이어 정방향 구동 → 세트 배출
+    ! ================================================================
+    PROC main()
+	Accset 1, 1;
+
+        stack_cnt := 1;     ! 매 실행 전 카운터 초기화
+
+        MoveJ pSafe3, v200, z50, tool1;
+
+        base_to_con;                    ! 베이스패널 픽앤플레이스
+
+        FOR i FROM 1 TO 4 DO           ! 벽패널 4개 (i는 루프 카운트용, 미사용)
+            wall_to_con;               ! 실제 색상·높이는 stack_cnt로 결정
+        ENDFOR
+
+        ceil_to_con;                    ! 천장패널 픽앤플레이스 → 세트 완성
+
+        ! 컨베이어 정방향 구동 — 세트 배출
+        ! [방식 A] 고정 시간 펄스 (PLength = 작동 시간(초), 확정 후 수정)
+        PulseDO\PLength:=3, do103_conv_fwd;
+        WaitTime 3;     ! 컨베이어 동작 완료 대기
+
+        ! [방식 B] 끝단 용량형 센서 감지 방식 (A 대신 사용 가능)
+        ! SetDO do103_conv_fwd, 1;
+        ! WaitDI di_conv_end, 1;
+        ! SetDO do103_conv_fwd, 0;
+    ENDPROC
+
+    ! ================================================================
+    ! PROC absorber_on / absorber_off
+    !   PulseDO로 0.2초 신호 → WaitTime으로 동작 완료 대기
+    !   스프링 완충 구조 특성상 WaitTime 0.5초 확보 (조정 가능)
+    ! ================================================================
+    PROC absorber_on()
+        PulseDO\PLength:=0.2, do101_absorber_on;
+        WaitTime 0.5;   ! 흡착 안정화 대기
+    ENDPROC
+
+    PROC absorber_off()
+        PulseDO\PLength:=0.2, do102_absorber_off;
+        WaitTime 0.5;   ! 릴리즈 완료 대기
+    ENDPROC
+
+    ! ================================================================
+    ! PROC base_to_con
+    !   베이스패널 적재함에서 픽 → 컨베이어에 플레이스
+    !
+    !   [픽 공식]
+    !     Zpick = (BpC - 1) * HoB
+    !     BpC=1 → Zpick=0  → pBasebox 그대로 (1패널 기준좌표)
+    !     BpC=2 → Zpick=HoB → 한 단 위 패널
+    !     접근 : Offs(pBasebox, 0,0, Zpick + StandB + AppClear)
+    !     하강 : Offs(pBasebox, 0,0, Zpick)
+    !
+    !   [플레이스 공식]
+    !     pCon 직접 사용 — 오프셋 없음 (베이스가 모든 기준의 시작)
+    !
+    !   [포지셔닝]
+    !     플레이스 후 컨베이어 역방향 1초 구동 → 위치 보정
+    ! ================================================================
+    PROC base_to_con()
+        VAR num Zpick;
+        Zpick := (BpC - 1) * HoB;      ! 수량에 따른 픽 Z 오프셋
+
+        ! -- 픽 시퀀스 --
+        MoveJ pSafe1, v200, z50, tool1;
+        MoveJ Offs(pBasebox, 0, 0, Zpick + StandB + AppClear), v200, z50, tool1;   ! 접근
+        MoveL Offs(pBasebox, 0, 0, Zpick), v50, fine, tool1;                        ! 하강 (흡착 위치)
+        absorber_on;
+        MoveL Offs(pBasebox, 0, 0, Zpick + StandB + AppClear), v50, z50, tool1;    ! 리프트 (지지대 상단 + 여유)
+
+        ! -- 플레이스 시퀀스 --
+        MoveJ Offs(pCon, 0, 0, AppClear), v200, z50, tool1;    ! 컨베이어 위 접근
+        MoveL pCon, v50, fine, tool1;                           ! 베이스패널 안착
+        absorber_off;
+        MoveL Offs(pCon, 0, 0, AppClear), v200, z50, tool1;    ! 상승
+        MoveJ pSafe1, v200, z50, tool1;
+
+        BpC := BpC - 1;     ! 수량 차감
+
+        ! -- 컨베이어 역방향 1초 (포지셔닝) --
+        ! 로봇이 pSafe1 복귀하는 동안 비동기 구동됨
+        ! → 1초 후 정지 확인 필요 시 WaitTime 추가
+        PulseDO\PLength:=1, do104_conv_rev;
+        WaitTime 1;     ! wall_to_con 시작 전 컨베이어 정지 보장
+    ENDPROC
+
+    ! ================================================================
+    ! PROC wall_to_con
+    !   색별 벽패널 적재함에서 픽 → 컨베이어 베이스패널 위에 적재
+    !
+    !   [stack_cnt 로 색상과 플레이스 높이 동시 결정]
+    !     stack_cnt = 1     → 하양(White)  | Zplace = 1*ToP = 2mm
+    !     stack_cnt = 2,3   → 파랑(Blue)   | Zplace = 2,3*ToP
+    !     stack_cnt = 4     → 갈색(Brown)  | Zplace = 4*ToP = 8mm
+    !
+    !   [픽 공식]
+    !     Zpick = (색카운터 - 1) * ToP
+    !     해당 색 카운터=1 → Zpick=0 (기준좌표)
+    !
+    !   [플레이스 공식]
+    !     Offs(pCon, 0, 0, stack_cnt * ToP)
+    !     접근은 항상 Offs(pCon, 0, 0, AppClear)에서 MoveL로 하강
+    !
+    !   [stack_cnt 업데이트]
+    !     1→2→3→4→1 순환 (4 완료 후 1로 초기화)
+    ! ================================================================
+    PROC wall_to_con()
+        VAR num Zpick;
+        VAR num Zplace;
+        Zplace := stack_cnt * ToP;      ! 컨베이어 위 플레이스 Z 오프셋
+
+        MoveJ pSafe2, v200, z50, tool1;
+
+        IF stack_cnt = 1 THEN
+            ! ── 하양벽 (첫 번째 벽) ──
+            Zpick := (WpC - 1) * ToP;
+            MoveJ Offs(pWhitebox, 0, 0, Zpick + StandW + AppClear), v200, z50, tool1;
+            MoveL Offs(pWhitebox, 0, 0, Zpick), v50, fine, tool1;
+            absorber_on;
+            MoveL Offs(pWhitebox, 0, 0, Zpick + StandW + AppClear), v50, z50, tool1;
+            WpC := WpC - 1;
+
+        ELSEIF stack_cnt = 2 OR stack_cnt = 3 THEN
+            ! ── 파랑벽 (두·세 번째 벽) ──
+            Zpick := (BlpC - 1) * ToP;
+            MoveJ Offs(pBluebox, 0, 0, Zpick + StandW + AppClear), v200, z50, tool1;
+            MoveL Offs(pBluebox, 0, 0, Zpick), v50, fine, tool1;
+            absorber_on;
+            MoveL Offs(pBluebox, 0, 0, Zpick + StandW + AppClear), v50, z50, tool1;
+            BlpC := BlpC - 1;
+
+        ELSEIF stack_cnt = 4 THEN
+            ! ── 갈색벽 (네 번째 벽) ──
+            Zpick := (BrpC - 1) * ToP;
+            MoveJ Offs(pBrownbox, 0, 0, Zpick + StandW + AppClear), v200, z50, tool1;
+            MoveL Offs(pBrownbox, 0, 0, Zpick), v50, fine, tool1;
+            absorber_on;
+            MoveL Offs(pBrownbox, 0, 0, Zpick + StandW + AppClear), v50, z50, tool1;
+            BrpC := BrpC - 1;
+        ENDIF
+
+        ! -- 컨베이어 플레이스 시퀀스 --
+        MoveJ Offs(pCon, 0, 0, AppClear), v200, z50, tool1;        ! pCon 기준 +50mm 접근
+        MoveL Offs(pCon, 0, 0, Zplace), v50, fine, tool1;          ! stack_cnt*ToP 위치로 하강
+        absorber_off;
+        MoveL Offs(pCon, 0, 0, Zplace + AppClear), v200, z50, tool1; ! 상승
+        MoveJ pSafe2, v200, z50, tool1;
+
+        ! -- stack_cnt 업데이트 (1→2→3→4→1) --
+        IF stack_cnt = 4 THEN
+            stack_cnt := 1;                 ! 4번째 완료 → 다음 세트 대비 초기화
+        ELSE
+            stack_cnt := stack_cnt + 1;     ! 순차 증가
+        ENDIF
+    ENDPROC
+
+    ! ================================================================
+    ! PROC ceil_to_con
+    !   천장패널 적재함에서 픽 → 컨베이어 베이스패널 위에 뚜껑처럼 안착
+    !
+    !   [픽 공식]
+    !     Zpick = (CpC - 1) * HoC
+    !
+    !   [플레이스 공식]
+    !     Offs(pCon, 0, 0, HoC)  — 고정 오프셋
+    !     천장패널은 벽 스택 높이와 무관하게 HoC 위치에 안착
+    !     (베이스패널 프레임 상단 림에 뚜껑처럼 얹힘)
+    ! ================================================================
+    PROC ceil_to_con()
+        VAR num Zpick;
+        Zpick := (CpC - 1) * HoC;      ! 수량에 따른 픽 Z 오프셋
+
+        ! -- 픽 시퀀스 --
+        MoveJ pSafe1, v200, z50, tool1;
+        MoveJ Offs(pCeilbox, 0, 0, Zpick + StandC + AppClear), v200, z50, tool1;
+        MoveL Offs(pCeilbox, 0, 0, Zpick), v50, fine, tool1;
+        absorber_on;
+        MoveL Offs(pCeilbox, 0, 0, Zpick + StandC + AppClear), v50, z50, tool1;
+
+        ! -- 플레이스 시퀀스 (뚜껑 안착) --
+        MoveJ Offs(pCon, 0, 0, HoC + AppClear), v200, z50, tool1;  ! 안착 위치 위 접근
+        MoveL Offs(pCon, 0, 0, HoC), v50, fine, tool1;             ! 천장패널 안착 (1세트 완성)
+        absorber_off;
+        MoveL Offs(pCon, 0, 0, HoC + AppClear), v200, z50, tool1;  ! 상승
+        MoveJ pSafe1, v200, z50, tool1;
+
+        CpC := CpC - 1;     ! 수량 차감
+    ENDPROC
+
+ENDMODULE

@@ -1,0 +1,21 @@
+//교재 99p 문제들
+
+#define _CRT_SECURE_NO_WARNINGS 
+#include <stdio.h>
+int main()
+{
+	int a = 0;
+	a = a + 1;
+	a = a + 2;
+	a = a + 3;
+	printf("%d\n", a);
+
+	int kor = 100, eng = 97, mat = 90;
+	scanf("%d %d %d", &kor, &eng, &mat);
+		int total = kor + eng + mat;
+	double avg = (double)total / 3;
+	printf("총점: %d, 평균: %.2lf", total, avg);
+
+
+	return 0;
+}

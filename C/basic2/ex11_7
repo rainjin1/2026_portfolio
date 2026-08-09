@@ -1,0 +1,15 @@
+#include <stdio.h>
+
+int main(void)
+{
+    int num, grade;
+
+    printf("학번 입력 : ");
+    scanf("%d", &num);
+
+    getchar(); //얘가 진짜 중요해서, 학번입력할때 마지막에 친 엔터를 날려줌. 엔터가 남아있는데 이게 그 엔터를 날려줘서 에러안나게해줌. 입력 버퍼 라고함.
+    printf("학점입력 : ");
+    grade = getchar();
+    printf("%d, %c", num, grade);
+    return 0;
+}

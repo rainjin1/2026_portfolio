@@ -1,0 +1,18 @@
+#include <stdio.h>
+
+int main() {
+    char word[80];
+    int len = 0;
+
+    scanf("%s", word);
+
+    while (word[len] != '\0') {
+        len++; //역순으로 읽을거라, 마지막 글자의 위치를 찾아야함. 널문자 만나기 직전까지.
+        //len 은 7글자짜리면 7이됨
+    }
+    for (int i = len - 1; i >= 0; i--) { //i 를 len -i로 만들어버림. 그러면 이제 len -0 부터 출력
+        printf("%c", word[i]); //7번부터 프린트.
+    }
+    printf("\n");
+    return 0;
+}

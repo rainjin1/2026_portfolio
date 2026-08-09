@@ -1,0 +1,176 @@
+MODULE AutoSorting
+
+    ! ============================================================
+    ! Taught positions - modify via FlexPendant
+    ! ============================================================
+    CONST robtarget home:=[[363.69,-15.56,318.90],[0.000409005,0.0321409,-0.999483,0.000307081],[-1,-1,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+    TASK PERS tooldata tool1:=[TRUE,[[0,0,110],[1,0,0,0]],[0.2,[0,0,50],[1,0,0,0],0,0,0]];
+
+    ! Pick position (bin)
+    CONST robtarget p_grip:=[[-34.18,-547.35,18.85],[0.000386607,0.0321485,-0.999483,0.000339378],[-2,-1,-2,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+
+    ! Place position (magazine)
+    CONST robtarget p_release:=[[611.74,-434.43,344.00],[0.000279621,0.0322524,-0.99948,-0.000408306],[-1,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+
+    ! Intermediate safe point
+    CONST robtarget p_safe1:=[[365.82,-363.55,506.69],[0.000206377,0.0322376,-0.99948,-0.000377234],[-1,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+
+    ! Grid offsets: 3 cols (X) x 2 rows (Y), 110 mm spacing
+    CONST num off_x:= 110;
+    CONST num off_y:= 110;
+
+    ! Approach clearance height (mm)
+    CONST num safe_range:= 50;
+
+    ! Photo sensor positions
+    CONST robtarget p_safe_photosensor:=[[283.94,252.31,199.07],[0.00047217,0.0321569,-0.999483,0.000319785],[0,0,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+    CONST robtarget p_photosensor:=[[611.52,8.63,137.57],[0.000403122,0.0321709,-0.999482,0.000468837],[0,-1,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+
+    ! Sorting box base position and X offsets per material type
+    CONST robtarget p_min_x_box:=[[72.12,423.91,73.08],[2.16894E-05,0.0322126,-0.999481,-1.69554E-05],[0,0,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+    CONST num metal_box:=0;
+    CONST num white_box:=120;
+    CONST num black_box:=240;
+
+    VAR string material;
+
+    ! ============================================================
+    PROC MAIN()
+        AccSet 1,1;
+        MoveJ home, v200, z50, tool1;
+
+        WHILE TRUE DO
+
+            ! ? Pick & place - runs when magazine is empty (di02_ma_none = 1)
+            IF di02_ma_none = 1 THEN
+                Bin_to_Magazine;
+                RETURN;
+            ENDIF
+
+            ! ? Normal completion: signal PLC to start conveyor
+            IF di02_ma_none = 0 THEN
+                PulseDO\PLength:=0.2, do02_plcstart;
+
+                ! ? Sorting loop - capture material type before picking to avoid race condition
+                WHILE TRUE DO
+                    WaitDI di06_arrive, 1;
+                    IF di03_metal = 1 THEN
+                        material := "metal";
+                    ELSEIF di04_plastic_black = 1 THEN
+                        material := "plastic_black";
+                    ELSEIF di05_plastic_white = 1 THEN
+                        material := "plastic_white";
+                    ENDIF
+                    Move_to_PhotoSensor;
+                    IF material = "metal" THEN
+                        Metal_Photo_to_Box;
+                    ELSEIF material = "plastic_black" THEN
+                        Black_Photo_to_Box;
+                    ELSEIF material = "plastic_white" THEN
+                        White_Photo_to_Box;
+                    ENDIF
+                    IF di02_ma_none = 1 and di06_arrive = 0 THEN
+                        RETURN;
+                    ENDIF
+                ENDWHILE
+            ENDIF
+
+            MoveJ home, v200, z50, tool1;
+
+        ENDWHILE
+    ENDPROC
+
+    ! ============================================================
+    ! Pick all 6 workpieces from bin and place into magazine
+    ! ============================================================
+    PROC Bin_to_Magazine()
+        FOR num_x FROM 0 TO 2 DO
+            FOR num_y FROM 0 TO 1 DO
+                PickPart num_x, num_y;
+                PlacePart;
+                ! Mid-cycle empty check: buzz and wait for restart signal
+                IF di02_ma_none = 1 THEN
+                    PulseDO\PLength:=0.2, do04_buzzer;
+                    MoveJ p_safe1, v200, z50, tool1;
+                    MoveJ home,    v200, z50, tool1;
+                    WaitDI di08_restart, 1;
+                    RETURN;
+                ENDIF
+            ENDFOR
+        ENDFOR
+    ENDPROC
+
+    ! ============================================================
+    ! Gripper control
+    ! ============================================================
+    PROC Grip_on()
+        PulseDO\PLength:=0.2, do00_grip_on;
+        WaitDI di00_grip_on_sen, 1;   ! Wait for grip confirm sensor
+        WaitTime 0.2;
+    ENDPROC
+
+    PROC Grip_off()
+        PulseDO\PLength:=0.2, do01_grip_off;
+        WaitDI di01_grip_off_sen, 1;    ! Wait for release confirm sensor
+        WaitTime 0.2;
+    ENDPROC
+
+    ! ============================================================
+    ! Pick from bin grid position (num_x=col 0-2, num_y=row 0-1)
+    ! ============================================================
+    PROC PickPart(num num_x, num num_y)
+        MoveJ Offs(p_grip, num_x*off_x, num_y*off_y, safe_range), v200, z5,   tool1;
+        MoveL Offs(p_grip, num_x*off_x, num_y*off_y, 0),          v50,  fine, tool1;
+        Grip_on;
+        MoveL Offs(p_grip, num_x*off_x, num_y*off_y, safe_range), v50,  z5,   tool1;
+    ENDPROC
+
+    ! ============================================================
+    ! Place into magazine slot
+    ! ============================================================
+    PROC PlacePart()
+        MoveJ p_safe1,                           v200, z50,  tool1;
+        MoveJ Offs(p_release, 0, 0, safe_range), v200, z5,   tool1;
+        MoveL p_release,                         v50,  fine, tool1;
+        Grip_off;
+        MoveJ Offs(p_release, 0, 0, safe_range), v50,  z5,   tool1;
+        MoveJ p_safe1,                           v200, z50,  tool1;
+    ENDPROC
+
+    ! ============================================================
+    ! Move to photo sensor and pick workpiece for sorting
+    ! ============================================================
+    PROC Move_to_PhotoSensor()
+        MoveJ p_safe_photosensor,                    v200, z50,  tool1;
+        MoveJ Offs(p_photosensor, 0, 0, safe_range), v200, z5,   tool1;
+        MoveL p_photosensor,                         v50,  fine, tool1;
+        Grip_on;
+        MoveL Offs(p_photosensor, 0, 0, safe_range), v50,  z5,   tool1;
+        MoveJ p_safe_photosensor,                    v200, z50,  tool1;
+    ENDPROC
+
+    ! ============================================================
+    ! Deposit to sorting boxes
+    ! ============================================================
+    PROC Metal_Photo_to_Box()
+        MoveJ Offs(p_min_x_box, metal_box, 0, safe_range), v200, z5,   tool1;
+        MoveL Offs(p_min_x_box, metal_box, 0, 0),          v50,  fine, tool1;
+        Grip_off;
+        MoveL Offs(p_min_x_box, metal_box, 0, safe_range), v50,  z5,   tool1;
+    ENDPROC
+
+    PROC White_Photo_to_Box()
+        MoveJ Offs(p_min_x_box, white_box, 0, safe_range), v200, z5,   tool1;
+        MoveL Offs(p_min_x_box, white_box, 0, 0),          v50,  fine, tool1;
+        Grip_off;
+        MoveL Offs(p_min_x_box, white_box, 0, safe_range), v50,  z5,   tool1;
+    ENDPROC
+
+    PROC Black_Photo_to_Box()
+        MoveJ Offs(p_min_x_box, black_box, 0, safe_range), v200, z5,   tool1;
+        MoveL Offs(p_min_x_box, black_box, 0, 0),          v50,  fine, tool1;
+        Grip_off;
+        MoveL Offs(p_min_x_box, black_box, 0, safe_range), v50,  z5,   tool1;
+    ENDPROC
+
+ENDMODULE

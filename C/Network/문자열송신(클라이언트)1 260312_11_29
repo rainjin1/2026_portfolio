@@ -1,0 +1,59 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+void error_handling(char *message);
+
+int main(int argc, char* argv[])
+{
+    int sock;
+    struct sockaddr_in serv_addr;
+    int str_len;
+    
+    if(argc!=3)
+    {
+        printf("Usage : %s <IP> <port>\n", argv[0]);
+        exit(1);
+    }
+
+    sock=socket(PF_INET, SOCK_STREAM, 0);
+    if(sock == -1)
+        error_handling("socket() error");
+    
+    memset(&serv_addr, 0, sizeof(serv_addr));
+    serv_addr.sin_family=AF_INET;
+    serv_addr.sin_addr.s_addr=inet_addr(argv[1]);
+    serv_addr.sin_port=htons(atoi(argv[2]));
+
+    if(connect(sock, (struct sockaddr*)&serv_addr, sizeof(serv_addr))==-1)
+        error_handling("connect() error");
+
+    char send_buffer[1024]; // 서버에 보내기위한 내 메시지를 저장하는 버퍼.(송신버퍼)
+    
+    // 문제의 구간: 기존에 서버가 인삿말을 건내던 부분이 있는데, 그걸 기다리고있어서 입력을 못함.
+    // 따라서 기존의 read()와 printf() 부분을 삭제
+
+    while(1)
+    {
+        printf("전송할 문자열을 입력하세요 (123 입력시 연결 끊기)\n");
+        fgets(send_buffer, sizeof(send_buffer), stdin);
+
+        write(sock, send_buffer, strlen(send_buffer));
+        
+        if(!strcmp(send_buffer, "123\n"))
+            break;        
+    }
+    
+    close(sock);
+    return 0;
+}
+
+void error_handling(char *message)
+{
+    fputs(message, stderr);
+    fputc('\n', stderr);
+    exit(1);
+}

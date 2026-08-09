@@ -1,0 +1,29 @@
+#define _CRT_SECURE_NO_WARNINGS 
+#include <stdio.h>
+
+
+//변수를 도구화 할 수 있느냐?
+//flag 변수 = 청기백기. T/F
+//카운트변수 = cnt(count)변수 사용 <<<<<<<<< 굉장히 편하게 사용 가능. for 문 안에도 넣을 수 있음.
+//
+int main()
+{
+	/*for  (int i = 1;i < 11; i++)
+	{
+		printf("%d\n", i);
+		if (i==7)
+		{
+			break;
+		}
+	}*/
+	int cnt = 1;
+	for (int i = 0; i <20; i++)
+	{
+		printf("%d\n", cnt++);
+		if (cnt==8)
+		{
+			break;
+		}
+	}
+	return 0;
+}

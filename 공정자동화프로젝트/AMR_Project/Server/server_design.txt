@@ -1,0 +1,214 @@
+═══════════════════════════════════════════════
+MES 게이트웨이 서버 설계 정리
+작성일: 2026-07-28
+═══════════════════════════════════════════════
+
+[프로젝트 개요]
+ABB IRB1200 로봇 2대 + Omron AMR + Mitsubishi PLC 2대 + Arduino + Raspberry Pi
+모듈러 하우스 벽판 자동 분류/조립 시스템
+Python TCP 서버가 모든 장치를 중앙 제어 (MES 구조)
+
+═══════════════════════════════════════════════
+[연결 구조]
+
+포트 9000 (서버 ← 접속)
+  R01      : 192.168.3.2  (ABB IRB1200 #1, RAPID T_comm)
+  R02      : 192.168.3.3  (ABB IRB1200 #2, RAPID T_comm)
+  AMR_ARD  : IP 미정      (AMR 탑재 Arduino, WiFi TCP)
+  Pi       : IP 미정      (Raspberry Pi 4B, 웹캠 색상판별)
+
+서버 → 접속
+  AMR  : ARCL TCP 192.168.x.x:7171 (상시 유지)
+  P01  : MC프로토콜 192.168.3.39:3900 (on-demand)
+  P02  : MC프로토콜 192.168.3.40:3900 (on-demand)
+
+═══════════════════════════════════════════════
+[자재 종류]
+
+1. 기초판 (Base)   : 1set당 1장
+2. 벽판 (Wall)     : 1set당 4장, 6가지 색상
+   WpC1=White / WpC2=Yellow / WpC3=Black
+   WpC4=Door  / WpC5=wiNdow / WpC6=Random
+3. 천장판 (Ceiling): 1set당 1장
+
+분류 순서: 천장 → 벽×4 (색상판별) → 기초
+
+적재함 재고 (BpC/CpC/WpC1~6):
+  +1: R1 분류 완료 시 (적재함에 들어올 때)
+  -1: R1 조립 출고 시 (이송대로 꺼낼 때)
+
+═══════════════════════════════════════════════
+[메시지 프로토콜] 구분자 \n 통일
+
+S → R01
+  R1_status              상태 조회 (하트비트)
+  Sort                   분류 명령
+  Y / B / W / N / D      색상값 전달 (WhatColor 응답)
+  R01:1234:StackXXXX     적재 명령 (주문번호 + 색상순서)
+
+R01 → S
+  R01:Ready/Sorting/Stacking   상태 응답
+  WhatColor                    색상 판별 요청
+  R01:SortDone                 분류 완료
+  R01:1234:StackDone           적재 완료 (주문번호 포함)
+
+S → R02
+  R2_status              상태 조회 (하트비트)
+  R02:1234:Assemble      조립 명령 (주문번호 포함)
+
+R02 → S
+  R02:Ready/Assemblying        상태 응답
+  R02:1234:ReadyRetract        이송실린더 후진 가능 신호
+  R02:1234:AssembleDone        조립 완료 (주문번호 포함)
+
+S → Pi
+  WhatColor              색상 판별 요청
+
+Pi → S
+  Y / B / W / N / D      색상 판별 결과
+
+S → AMR_ARD
+  AMR_ARD:CON:START      컨베이어 구동
+  AMR_ARD:CON:STOP       컨베이어 정지
+  AMR_ARD:GATE:1:OPEN    차단기1 열기
+  AMR_ARD:GATE:1:CLOSE   차단기1 닫기
+  AMR_ARD:GATE:2:OPEN    차단기2 열기
+  AMR_ARD:GATE:2:CLOSE   차단기2 닫기
+
+AMR_ARD → S
+  AMR_ARD:Ready          대기중
+  AMR_ARD:Input          입력 작업중
+  AMR_ARD:Output         출력 작업중
+  AMR_ARD:Done           동작 완료
+
+S → AMR (ARCL)
+  goal: R01Insert        R1 입력 위치 이동
+  goal: R02Output        R2 출력 위치 이동
+
+AMR → S
+  Arrived                목적지 도착
+
+P01/P02 (MC프로토콜 on-demand)
+  읽기: X31(입력도착센서), 입력도착1, 입력도착2
+        실린더1전진센서, 실린더2전진센서
+        이송실린더전진센서, 이송유무센서
+  쓰기: D13311(수량), 컨베이어ON/OFF, 이송실린더후진
+
+═══════════════════════════════════════════════
+[상태머신 흐름]
+
+INIT
+  - 사용자 터미널 → 재고 입력 (BpC/CpC/WpC1~6)
+  - R01 접속 대기
+  - S→R01: 재고값 전송 (BpC:N;CpC:N;WpC1:N;...;WpC6:N)
+  - R01→S: 복명복창 확인 → 불일치 시 재전송
+  → IDLE
+
+IDLE
+  - 주문 대기 (터미널: 좌표/벽 위치별 색상 입력)
+  - 좌표 중복 확인
+  → AMR_INPUT_MOVING
+
+AMR_INPUT_MOVING
+  - S→AMR: R01Insert 이동명령
+  - AMR→S: Arrived 대기
+  → MATERIAL_LOADING
+
+MATERIAL_LOADING
+  - S→P01: D13311 수량입력
+  - S→AMR_ARD: 수량입력
+  - S→P01: 컨베이어 구동 → X31 ON → 정지
+  - S→AMR_ARD: CON:START → 맨앞센서 소멸→재감지 → CON:STOP
+  - (수량-1)회 반복:
+      GATE:N:OPEN → CON:START → 입력도착N ON → CON:STOP → GATE:N:CLOSE
+  → SORTING
+
+SORTING
+  - S→R01: Sort
+  - R01→S: WhatColor (벽×4)
+      S→Pi: WhatColor → Pi→S: 색상값 → S→R01: 색상값
+  - R01→S: SortDone
+  - 재고 +1 (해당 색상 WpC)
+  - 재고 충분 여부 판단:
+      충분 → STACKING
+      부족 → SORTING 반복
+
+STACKING
+  - S→R01: R01:1234:Stack[색상순서] (천장→벽×4→기초)
+  - R01→S: R01:1234:StackDone
+  - 이송유무센서 확인
+  → R2_WORKING
+
+R2_WORKING
+  - S→R02: R02:1234:Assemble
+  - R02→S: R02:1234:ReadyRetract → S→P01: 이송실린더 후진
+  - R02→S: R02:1234:AssembleDone
+  - 재고 -1 (사용 자재)
+  - 주문 status → 완료
+  → AMR 우선순위 판단
+
+AMR 우선순위 (옵션C)
+  - R2 출력 대기 있음 → AMR_OUTPUT_MOVING
+  - 없음 → AMR_INPUT_MOVING (다음 주문)
+  * 출력 우선 (완성품 적체가 더 치명적)
+
+AMR_OUTPUT_MOVING
+  - S→AMR: R02Output 이동명령
+  - AMR→S: Arrived
+  - S→P02: 출력컨베이어 구동
+  - S→AMR_ARD: 수신 시퀀스 (CON/GATE)
+  → IDLE
+
+═══════════════════════════════════════════════
+[상시 동작]
+
+하트비트 (1초 주기):
+  S→R01: R1_status
+  S→R02: R2_status
+  S→AMR_ARD: AMR_ARD:status (→ 상태 저장)
+
+처리 우선순위:
+  1. 긴급정지 / 에러
+  2. 하트비트 (항상)
+  3. 공정 진행 메시지
+  4. AMR 스케줄링
+  5. 터미널 수동 입력
+
+═══════════════════════════════════════════════
+[DB 설계 - SQLite]
+
+orders 테이블:
+  order_id    INTEGER PK AUTOINCREMENT
+  status      TEXT DEFAULT '대기'
+              (대기/적재중/판별중/조립중/이송중/완료)
+  pos_x       INTEGER (1~3)
+  pos_y       INTEGER (1~3)
+  pos_z       INTEGER (1~3)
+  base_color  TEXT DEFAULT 'random'
+  ceil_color  TEXT DEFAULT 'random'
+  wall1_color TEXT  (위치1 색상: W/Y/B/D/N/R)
+  wall2_color TEXT
+  wall3_color TEXT
+  wall4_color TEXT
+  created_at  TEXT DEFAULT (datetime('now'))
+  updated_at  TEXT
+  * 좌표 중복 방지 (UNIQUE: pos_x, pos_y, pos_z)
+
+inventory 테이블:
+  item    TEXT PK  (BpC/CpC/WpC1~WpC6)
+  count   INTEGER DEFAULT 0
+
+state 테이블:
+  key     TEXT PK
+  value   TEXT
+  * 현재 상태머신 상태, AMR 위치 등 서버 재시작 시 복원용
+
+═══════════════════════════════════════════════
+[개발 원칙]
+
+1. 상태 접근은 get_state()/set_state() 통해서만
+   → DB 이식 시 함수 내부만 교체
+2. 타임아웃 없음 (데모 우선)
+3. 공정 우선 구현 → GUI/웹 추후
+4. SQLite 후이식 (현재는 dict 백엔드)
+═══════════════════════════════════════════════

@@ -1,0 +1,18 @@
+#include <stdio.h>
+
+void assign()
+{
+    int a;
+    a = 10;
+    printf("assign 함수 a : %d\n", a);
+}
+
+int main()
+{
+    auto int a =100;
+
+    assign();
+
+    printf("%d\n", a);
+    return 0;
+}

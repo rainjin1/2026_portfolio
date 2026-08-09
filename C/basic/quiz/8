@@ -1,0 +1,45 @@
+성적 1개 정수를 입력 받습니다. (score)
+
+100점 이하 90점 이상이면 ‘A’
+
+90점 미만 80점 이상이면 ‘B’
+
+80점 미만 70점 이상이면 ‘C’
+
+70점 미만 60점 이상이면 ‘D’
+
+59점 이하는 ‘F’
+
+
+
+if / else if / else 구문을 활용하여 결과를 출력해 보세요.
+
+#define _CRT_SECURE_NO_WARNINGS 
+#include <stdio.h>
+int main()
+{
+	int score;
+	printf("점수를 입력하세요: \n");
+	scanf("%d", &score);
+	printf("점수는 ");
+	if (score >= 90 && score <= 100)
+		printf("A\n");
+	else if (score >80 && score<=89)
+	{
+		printf("B\n");
+	}
+	else if (score>70&&score<=80)
+	{
+		printf("C\n");
+	}
+	else if (score>60 && score<=70)
+	{
+		printf("D\n");
+	}
+	else
+	{
+		printf("F");
+	}
+	printf("입니다");
+	return 0;
+}

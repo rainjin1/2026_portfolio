@@ -1,0 +1,6 @@
+	char str[80] = "applejam";
+
+	printf("%s\n%d", str, strlen(str));
+
+	return 0;
+}

@@ -1,0 +1,36 @@
+from pop import Sht20, delay, Leds
+sht = Sht20()
+led = Leds()
+led.allOff()
+count = 0
+ac_controller = False
+is_file_closed = False
+with open("Temperature_Humidity.csv", 'w', encoding='utf-8') as f:
+    f.write("온도" + ", " + "습도" + "\r")
+    while True:
+        temperature = sht.readTemp() # 온도 읽기
+        humidity = sht.readHumi()# 습도 읽기
+        print(f'온도: {temperature:.2f}') # 2번째 자리까지 출력
+        print(f'습도: {humidity:.2f}')
+        f.write(f"{temperature:.2f}"+", ") #csv파일로 저장
+        f.write(f"{humidity:.2f}"+"\r")
+        count +=1
+        temp = temperature #아래에서 편히 쓰기위한 변수 재정의
+        humi = humidity
+        if humi > 40: #습도가 40%이상일 경우, led를 순차적으로 켜고, 에어컨을 켰다고 가정
+            for i in range(8):
+                led[i].on()
+                delay(10)
+            print("ac is on")
+            ac_controller = True # 에어컨 컨트롤변수 켜기
+        if humi <40 and ac_controller is True: # 습도가 40%이하가 되고 에어컨이 켜져있다면 에어컨 끄기
+            led.allOff()
+            print("ac is off")
+        if count >= 100: #10개의 정보를 저장 및 학습
+            print("저장 종료")
+            f.close()
+            is_file_closed = True
+        if not is_file_closed:
+            f.write(f"{temperature:.2f}"+", ")
+            f.write(f"{humidity:.2f}" + "\r")
+        delay(1)

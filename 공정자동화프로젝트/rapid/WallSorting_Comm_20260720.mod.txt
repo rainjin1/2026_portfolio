@@ -1,0 +1,100 @@
+MODULE WallSorting_Comm
+! ===================================================================
+! Project  : Modular House Wall Panel Auto-Stacking System
+! File     : WallSorting_Comm_20260720.mod.txt
+! Date     : 2026-07-20
+! Version  : 2.0  -- Dedicated TCP socket communication task
+! Scope    : T_comm task -- all socket I/O with PC vision system
+!            Configure as: Task type NORMAL, no motion
+!
+! Socket protocol (unchanged from v1.3 single-task design):
+!   Startup : ROBOT -> "HELLO"     / PC   -> "OK"
+!   Set cnt : ROBOT -> "HOW_MANY"  / PC   -> "<n>"  (1-3; re-sent until valid)
+!   Color   : ROBOT -> "REQ"       / PC   -> "<1|2|3>"
+!
+! PERS handshake with T_ROB1:
+!   (1) T_ROB1 sets req_* := TRUE
+!   (2) T_comm processes socket, writes result to pers_*, sets *_ready := TRUE,
+!       then holds on WaitUntil req_* = FALSE
+!   (3) T_ROB1 reads pers_*, sets req_* := FALSE
+!   (4) T_comm exits WaitUntil, clears *_ready := FALSE, resumes polling
+! ===================================================================
+
+    ! -- PERS handshake flags (shared with T_ROB1) ------------------
+    ! Declarations must match T_ROB1 exactly (name, type, initial value)
+    PERS bool comm_ready    := FALSE;  ! set TRUE after HELLO/OK -- T_ROB1 startup sync
+    PERS bool req_howmany   := FALSE;  ! T_ROB1 -> T_comm: need set count
+    PERS bool howmany_ready := FALSE;  ! T_comm -> T_ROB1: pers_set_cnt is valid
+    PERS num  pers_set_cnt  := 0;      ! validated set count written by T_comm (1-3)
+    PERS bool req_color     := FALSE;  ! T_ROB1 -> T_comm: need color result
+    PERS bool color_ready   := FALSE;  ! T_comm -> T_ROB1: pers_color is valid
+    PERS num  pers_color    := 0;      ! color result written by T_comm (1=white 2=gray 3=yellow)
+
+    ! -- Socket variables (local to T_comm) -------------------------
+    VAR socketdev server_sock;
+    VAR socketdev client_sock;
+    VAR string    recv_str;
+    VAR bool      conv_ok;
+
+    ! ================================================================
+    ! main
+    !   Opens socket ONCE at task start (same as v1.3).
+    !   Sets comm_ready after HELLO/OK to unblock T_ROB1.
+    !   Polls PERS flags in WHILE TRUE; processes one request at a time.
+    ! ================================================================
+    PROC main()
+
+        ! -- Socket init: run once per program start ----------------
+        SocketCreate  server_sock;
+        SocketBind    server_sock, "192.168.3.2", 1025;
+        SocketListen  server_sock;
+        SocketAccept  server_sock, client_sock \Time:=60;
+        SocketSend    client_sock \Str:="HELLO";
+        SocketReceive client_sock \Str:=recv_str \Time:=60;
+        ! recv_str expected: "OK"
+
+        ! Signal T_ROB1: socket is up, handshake complete
+        comm_ready := TRUE;
+
+        ! -- PERS flag polling loop ---------------------------------
+        WHILE TRUE DO
+
+            ! -- HOW_MANY handshake ---------------------------------
+            ! T_ROB1 raises req_howmany when it needs the set count.
+            ! T_comm sends HOW_MANY, validates response (1-3), writes
+            ! pers_set_cnt, then holds until T_ROB1 lowers req_howmany.
+            IF req_howmany THEN
+                SocketSend    client_sock \Str:="HOW_MANY";
+                SocketReceive client_sock \Str:=recv_str \Time:=600;
+                conv_ok := StrToVal(recv_str, pers_set_cnt);
+                ! Re-ask until PC returns valid set count (1-3)
+                WHILE pers_set_cnt < 1 OR pers_set_cnt > 3 DO
+                    WaitTime 1;
+                    SocketSend    client_sock \Str:="HOW_MANY";
+                    SocketReceive client_sock \Str:=recv_str \Time:=600;
+                    conv_ok := StrToVal(recv_str, pers_set_cnt);
+                ENDWHILE
+                howmany_ready := TRUE;
+                ! Hold until T_ROB1 reads pers_set_cnt and lowers req_howmany
+                WaitUntil req_howmany = FALSE;
+                howmany_ready := FALSE;
+            ENDIF
+
+            ! -- REQ (color) handshake ------------------------------
+            ! T_ROB1 raises req_color for each panel to be sorted.
+            ! T_comm sends REQ, receives color (1/2/3), writes pers_color,
+            ! then holds until T_ROB1 lowers req_color.
+            IF req_color THEN
+                SocketSend    client_sock \Str:="REQ";
+                SocketReceive client_sock \Str:=recv_str \Time:=60;
+                conv_ok := StrToVal(recv_str, pers_color);
+                color_ready := TRUE;
+                ! Hold until T_ROB1 reads pers_color and lowers req_color
+                WaitUntil req_color = FALSE;
+                color_ready := FALSE;
+            ENDIF
+
+        ENDWHILE
+    ENDPROC
+
+ENDMODULE

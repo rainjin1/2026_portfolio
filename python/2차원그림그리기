@@ -1,0 +1,54 @@
+canvas = [["□" for j in range(10)] for i in range(10)]
+
+for verticalL in range(10):
+    for small_l in range(1, 9):
+        canvas[small_l][0] = "■" # L의 수직부분 그리기
+for horizontalL in range(1, 4):
+    canvas[8][horizontalL] = "■" # L의 가로부분그리기
+for horizontall_top_G in range(5, 10):
+    canvas[1][horizontall_top_G] = "■" #G의 윗 수평라인그리기
+for vertical_left_G in range(1, 9):
+    canvas[vertical_left_G][5] = "■" #G의 왼쪽 수직구간
+for horizontall_bottom_G in range(5, 10):
+    canvas[8][horizontall_bottom_G] = "■" #G의 아래 수평구간
+for vertical_right_G in range(5, 8):
+    canvas[vertical_right_G][9] = "■" #G의 오른쪽 수직구간
+for horizontall_mid_G in range(7, 10):
+    canvas[4][horizontall_mid_G] = "■" #G의 중간 부분
+
+leftright_flipped_canvas = [row[::-1] for row in canvas] # [i][j] 에서 j순서만 역순으로
+topbottom_flipped_canvas = canvas[::-1] # [i][j] 에서 i를 역순으로 돌림
+both_flipped_canvas = [row[::-1] for row in canvas[::-1]] #[i][j]둘다 역순으로 재정렬
+while True:
+    choice = input("1번: 원본, 2번: 좌우반전, 3번: 상하반전, 4번: 상하좌우반전 / 0번: 종료\n")
+
+    try:
+        Graphic_Check = int(choice)
+
+        # 1. 종료 조건부터 확인
+        if Graphic_Check == 0:
+            print("종료합니다")
+            break
+
+        # 2. 유효한 범위(1~4)인지 확인
+        elif 1 <= Graphic_Check <= 4:
+            if Graphic_Check == 1:
+                target = canvas
+            elif Graphic_Check == 2:
+                target = leftright_flipped_canvas
+            elif Graphic_Check == 3:
+                target = topbottom_flipped_canvas
+            else:
+                target = both_flipped_canvas
+
+            # 출력 루프
+            for i in range(10):
+                print(target[i])
+
+        # 3. 숫자이긴 한데 0~4가 아닌 경우
+        else:
+            print("범위 초과! 0~4 사이의 숫자만 입력해주세요.")
+
+    except ValueError:
+        # 4. 숫자가 아닌 문자를 입력한 경우
+        print("⚠️ 숫자를 입력해야 합니다!")

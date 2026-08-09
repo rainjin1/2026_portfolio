@@ -1,0 +1,187 @@
+import cv2
+import random
+import time
+import numpy as np
+import math
+
+
+# ------------------ 도형 클래스 (부모) ------------------
+class Figures:
+    def __init__(self, x, y, color, size, is_bad=False):
+        self.x = x
+        self.y = y
+        self.original_color = color
+        self.size = size
+        self.is_bad = is_bad
+        self.angle = 0
+        self.initial_rotation_speed = random.uniform(5, 12)
+        self.spawn_time = time.time()
+
+        # 사이즈별 능력치 설정
+        if size == 18:
+            self.score_value = 3
+            self.lifetime = 1.3
+        elif size == 24:
+            self.score_value = 2
+            self.lifetime = 2.0
+        else:  # 30
+            self.score_value = 1
+            self.lifetime = 2.8
+
+    def get_life_ratio(self):
+        """남은 수명 비율 반환 (1.0 -> 0.0)"""
+        elapsed = time.time() - self.spawn_time
+        return max(0, 1.0 - (elapsed / self.lifetime))
+
+    def get_display_color(self):
+        """수명에 따라 색상 계산 (함정은 고정, 일반은 하얗게)"""
+        if self.is_bad:
+            return self.original_color  # 함정은 색 변화 없음
+
+        ratio = self.get_life_ratio()
+        # ratio가 1이면 원본색, 0에 가까워질수록 255(하얀색)에 가까워짐
+        # 공식: 원본 + (255 - 원본) * (1 - ratio)
+        new_color = []
+        for c in self.original_color:
+            faded = int(c + (255 - c) * (1 - ratio))
+            new_color.append(min(255, faded))
+        return tuple(new_color)
+
+    def is_expired(self):
+        """밝기 비율이 임계치에 도달하면 삭제"""
+        return self.get_life_ratio() <= 0.15
+
+    def is_touched(self, thresh_frame):
+        x1, y1 = max(0, self.x - self.size), max(0, self.y - self.size)
+        x2, y2 = min(thresh_frame.shape[1], self.x + self.size), min(thresh_frame.shape[0], self.y + self.size)
+        roi = thresh_frame[y1:y2, x1:x2]
+        if roi.size == 0: return False
+        return cv2.countNonZero(roi) > (roi.size * 0.1)
+
+
+# ------------------ 자식 클래스 ------------------
+class Ball(Figures):
+    def draw(self, frame):
+        color = self.get_display_color()
+        cv2.circle(frame, (self.x, self.y), self.size, color, -1)
+
+
+class Square(Figures):
+    def draw(self, frame):
+        ratio = self.get_life_ratio()
+        self.angle += self.initial_rotation_speed * ratio
+        color = self.get_display_color()
+
+        rect_pts = np.array([[-self.size, -self.size], [self.size, -self.size],
+                             [self.size, self.size], [-self.size, self.size]])
+        rad = np.radians(self.angle)
+        rot = np.array([[np.cos(rad), -np.sin(rad)], [np.sin(rad), np.cos(rad)]])
+        rotated = np.dot(rect_pts, rot).astype(int) + np.array([self.x, self.y])
+        cv2.fillPoly(frame, [rotated], color)
+
+
+class Triangle(Figures):
+    def draw(self, frame):
+        ratio = self.get_life_ratio()
+        self.angle += self.initial_rotation_speed * ratio
+        color = self.get_display_color()
+
+        tri_pts = np.array([[0, -self.size], [-self.size, self.size], [self.size, self.size]])
+        rad = np.radians(self.angle)
+        rot = np.array([[np.cos(rad), -np.sin(rad)], [np.sin(rad), np.cos(rad)]])
+        rotated = np.dot(tri_pts, rot).astype(int) + np.array([self.x, self.y])
+        cv2.fillPoly(frame, [rotated], color)
+
+
+# ------------------ 유틸리티 및 메인 ------------------
+def get_safe_point(width, height, size):
+    cx, cy = width // 2, height
+    r = int(math.sqrt((width / 2) ** 2 + (height * 0.75) ** 2))
+    for _ in range(50):
+        theta = random.uniform(0.15 * math.pi, 0.85 * math.pi)
+        radius = random.uniform(r - 70 - size, r - size)
+        x, y = int(cx + radius * math.cos(theta)), int(cy - radius * math.sin(theta))
+        if 40 < x < width - 40 and 40 < y < height - 40: return x, y
+    return width // 2, height // 2
+
+
+def main():
+    cap = cv2.VideoCapture(0)
+    w, h = 640, 480
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+
+    menu_items = [Ball(160, 100, (0, 0, 255), 30), Square(320, 100, (0, 255, 0), 30),
+                  Triangle(480, 100, (255, 0, 0), 30)]
+    for m in menu_items: m.lifetime = 99999
+
+    pre_gray, game_started, selected_item = None, False, None
+    shapes, score, spawn_time, start_time = [], 0, 0, 0
+    spawn_delay = 0.5
+
+    while True:
+        ret, frame = cap.read()
+        if not ret: break
+        frame = cv2.flip(frame, 1)
+        gray = cv2.GaussianBlur(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (11, 11), 0)
+
+        if pre_gray is None:
+            pre_gray = gray
+            continue
+
+        diff = cv2.absdiff(pre_gray, gray)
+        _, thresh = cv2.threshold(diff, 35, 255, cv2.THRESH_BINARY)
+
+        if not game_started:
+            cv2.putText(frame, "SELECT YOUR SHAPE!", (190, 50), 2, 0.8, (255, 255, 255), 2)
+            for item in menu_items:
+                if item.is_touched(thresh):
+                    selected_item, game_started = item, True
+                    spawn_time = start_time = time.time()
+                item.draw(frame)
+        else:
+            if time.time() - spawn_time > spawn_delay:
+                size = random.choice([18, 24, 30])
+                sx, sy = get_safe_point(w, h, size)
+                is_bad = random.random() < 0.15
+                # 함정은 완전한 검은색(0,0,0), 일반은 선택한 색상
+                color = (0, 0, 0) if is_bad else selected_item.original_color
+
+                if isinstance(selected_item, Ball):
+                    shapes.append(Ball(sx, sy, color, size, is_bad))
+                elif isinstance(selected_item, Square):
+                    shapes.append(Square(sx, sy, color, size, is_bad))
+                elif isinstance(selected_item, Triangle):
+                    shapes.append(Triangle(sx, sy, color, size, is_bad))
+                spawn_time = time.time()
+
+            for shape in shapes[:]:
+                shape.draw(frame)
+                if shape.is_touched(thresh):
+                    # 함정 터치 시 해당 사이즈의 점수만큼 차감
+                    score += -shape.score_value if shape.is_bad else shape.score_value
+                    shapes.remove(shape)
+                elif shape.is_expired():
+                    shapes.remove(shape)
+
+            rem = max(0, 30 - int(time.time() - start_time))
+            cv2.putText(frame, f"SCORE: {score}", (20, 45), 2, 1, (255, 255, 255), 2)
+            cv2.putText(frame, f"TIME: {rem}s", (510, 45), 2, 0.8, (0, 255, 255), 2)
+
+            if rem <= 0:
+                cv2.rectangle(frame, (180, 200), (460, 280), (0, 0, 0), -1)
+                cv2.putText(frame, "TIME UP!", (235, 255), 2, 1.5, (0, 255, 0), 3)
+                cv2.imshow("Shape Game", frame)
+                cv2.waitKey(3000)
+                break
+
+        cv2.imshow("Shape Game", frame)
+        pre_gray = gray
+        if cv2.waitKey(1) == 27: break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    main()

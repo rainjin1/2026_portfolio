@@ -1,0 +1,280 @@
+MODULE WallSorting
+! ===================================================================
+! Project  : Modular House Wall Panel Auto-Stacking System
+! File     : WallSorting_ENG_20260708.mod.txt
+! Date     : 2026-07-08
+! Version  : 1.0  Draft (coords & constants to be filled after teach)
+! Scope    : Phase 2 - fixed-sequence conveyor output only
+!            Phase 1 (camera color sort) to be added as separate module
+! ===================================================================
+
+    ! ?? Tool ?????????????????????????????????????????????????????????
+    ! TCP : z = 173 mm from flange (no x/y offset)
+    ! Mass: 0.1 kg,  CoM: z = 130 mm
+    ! ?????????????????????????????????????????????????????????????????
+    TASK PERS tooldata tool1 := [TRUE,[[0,0,184],[1,0,0,0]],
+                                       [0.1,[0,0,95],[1,0,0,0],0,0,0]];
+
+    ! ?? Positions (teach before run) ?????????????????????????????????
+    ! Box coords  = suction contact with 1 panel inside (spring-pressed)
+    ! Pick offset = Offs(pXXX, 0, 0, (count-1)*unit)
+    ! pCon        = TCP when placing / picking 1 base panel on conveyor
+    ! ?????????????????????????????????????????????????????????????????
+    CONST robtarget pBasebox  := [[42.03,-355.71,190.15],[0.00017954,-0.423396,-0.905945,-0.000537782],[-1,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]; ! base panel box, 1-panel ref
+    CONST robtarget pCeilbox  := [[-232.86,-352.68,186.58],[0.000177258,-0.42341,-0.905938,-0.000557031],[-2,-1,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]; ! ceiling panel box, 1-panel ref
+    CONST robtarget pWallbox1 := [[388.06,270.84,314.26],[0.000170019,-0.423388,-0.905948,-0.000495164],[0,0,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]; ! white wall box, 1-panel ref
+    CONST robtarget pWallbox2  := [[386.64,373.14,314.07],[0.000190331,-0.42339,-0.905948,-0.000452282],[0,0,1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]; ! blue wall box, 1-panel ref
+    CONST robtarget pWallbox3 := [[0,0,0],[1,0,0,0],[0,0,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]; ! brown wall box, 1-panel ref
+    CONST robtarget pSafe1    := [[-77.46,-352.69,335.42],[0.000167978,-0.423408,-0.905939,-0.000522554],[-2,-1,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]; ! safe pos: base/ceiling box area
+    CONST robtarget pSafe2    := [[351.71,375.96,568.83],[0.000131441,-0.423384,-0.90595,-0.000470973],[0,0,1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]; ! safe pos: wall box area
+    CONST robtarget pSafe3    := [[298.40,-158.58,574.66],[0.00014785,-0.423394,-0.905945,-0.000483361],[-1,0,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]; ! safe pos: global home
+    CONST robtarget pCon_BB      := [[96.34,-568.44,158.54],[0.000228554,-0.423493,-0.905899,-0.000527713],[-1,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]; ! conveyor base-panel place ref
+    CONST robtarget pCon_Wall1      := [[89.51,-570.03,162.88],[0.000207282,-0.423375,-0.905954,-0.000557022],[-1,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]; ! exact conveyor base-panel place ref(after cylinder on)
+    CONST robtarget pCon_Wall2      := [[89.51,-570.03,162.88],[0.000207282,-0.423375,-0.905954,-0.000557022],[-1,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]; ! since every boxes have diffrent angle so it cant be done with single coords only
+    CONST robtarget pCon_Wall3      := [[89.51,-570.03,162.88],[0.000207282,-0.423375,-0.905954,-0.000557022],[-1,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]; ! same as 2nd coord
+    
+    
+    CONST robtarget pCon_Ceil      := [[87.98,-571.00,176.60],[0.000234693,-0.417117,-0.908853,-0.000599078],[-1,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]]; ! exact conveyor base-panel place ref(after cylinder on)
+
+    ! ?? Physical constants (measure and fill in, unit: mm) ???????????
+    ! HoB      : base panel total height  - used in pick offset
+    ! HoC      : ceiling panel thickness = height (same value)
+    ! ToP      : wall panel thickness = 2 mm (fixed)
+    ! StandB/C/W : support frame height per box  - clearance when lifting
+    ! AppClear : extra clearance above panel/frame before horizontal move
+    ! ?????????????????????????????????????????????????????????????????
+    CONST num HoB      := 20;    ! base panel total height
+    CONST num HoC      := 11;    ! ceiling panel thickness/height
+    CONST num ToP      := 2;    ! wall panel thickness (fixed)
+    CONST num StandB   := 59;    ! base box support frame height
+    CONST num StandC   := 59;    ! ceiling box support frame height
+    CONST num StandW   := 120;    ! wall box support frame height
+    CONST num AppClear := 50;   ! approach/retract clearance
+
+    ! ?? Variables (set manually before run) ??????????????????????????
+    ! stack_cnt : walls stacked on conveyor so far in current set
+    !             init = 1, max = 4, resets to 1 after 4th wall
+    !             determines pick color and place height simultaneously
+    ! ?????????????????????????????????????????????????????????????????
+    VAR num BpC       := 1;     ! base panels remaining
+    VAR num CpC       := 1;     ! ceiling panels remaining
+    VAR num WpC1      := 4;     ! white wall panels remaining
+    VAR num WpC2      := 0;     ! blue wall panels remaining
+    VAR num WpC3      := 0;     ! brown wall panels remaining
+    VAR num stack_cnt := 1;     ! conveyor wall stack counter (1-4)
+
+    ! ================================================================
+    ! main
+    !   1. Move to global safe pos
+    !   2. Place base panel on conveyor
+    !   3. Place 4 wall panels (FOR loop x4 -> wall_to_con)
+    !   4. Place ceiling panel  -> 1 set complete
+    !   5. Run conveyor forward -> eject set
+    ! ================================================================
+    PROC main()
+	Accset 1, 1;
+        stack_cnt := 1;
+             ! reset counter each run
+
+        MoveJ pSafe3, v200, z50, tool1;
+
+        base_to_con;
+
+        FOR i FROM 1 TO 4 DO    ! i is loop counter only; color/height from stack_cnt
+            temp_wall_to_con;
+        ENDFOR
+
+        ceil_to_con;
+
+        ! Conveyor forward - eject completed set
+        ! Option A: fixed-time pulse (set PLength after timing test)
+        PulseDO\PLength:=0.2, do11_cyl_off;
+        WaitTime 1;
+        PulseDO\PLength:=3, do08_conv_fwd;
+        WaitTime 3;
+        ! Option B: capacitive end-sensor
+        ! SetDO do103_conv_fwd, 1;
+        ! WaitDI di_conv_end, 1;
+        ! SetDO do103_conv_fwd, 0;
+    ENDPROC
+
+    ! ================================================================
+    ! absorber_on / absorber_off
+    !   0.2 s pulse + 0.5 s settle wait
+    ! ================================================================
+    PROC absorber_on()
+        PulseDO\PLength:=0.2, do00_absorber_on;
+        WaitTime 0.5;
+    ENDPROC
+
+    PROC absorber_off()
+        PulseDO\PLength:=0.2, do01_absorber_off;
+        WaitTime 0.5;
+    ENDPROC
+
+    ! ================================================================
+    ! base_to_con
+    !   Pick base panel from box -> place on conveyor at pCon
+    !
+    !   Pick  : Offs(pBasebox, 0,0, (BpC-1)*HoB)
+    !           BpC=1 -> offset=0 -> pBasebox exact (1-panel ref)
+    !   Place : pCon direct (base = reference origin for all stacking)
+    !   After : conveyor reverse 1 s for positioning
+    ! ================================================================
+    PROC base_to_con()
+        VAR num Zpick;
+        Zpick := (BpC - 1) * HoB;
+
+        ! -- Pick --
+        MoveJ pSafe1, v200, z50, tool1;
+        MoveJ Offs(pBasebox, 0, 0,StandB + AppClear), v200, z50, tool1;
+        MoveL Offs(pBasebox, 0, 0, Zpick), v50, fine, tool1;
+        absorber_on;
+        MoveL Offs(pBasebox, 0, 0,StandB + AppClear), v50, z50, tool1;
+
+        ! -- Place --
+        MoveJ Offs(pCon_BB, 0, 0, AppClear), v200, z50, tool1;
+        MoveL pCon_BB, v50, fine, tool1;
+        absorber_off;
+        MoveL Offs(pCon_BB, 0, 0, AppClear), v200, z50, tool1;
+        MoveJ pSafe1, v200, z50, tool1;
+
+        BpC := BpC - 1;
+
+        ! -- Conveyor reverse 1 s (positioning) --
+        SetDO do09_conv_bwd, 1;
+        WaitTime 1;
+        PulseDO\PLength:=1, do10_cyl_on;
+        WaitDI di10_base_set, 1;
+        SetDO do09_conv_bwd, 0;
+    ENDPROC
+
+    ! ================================================================
+    ! wall_to_con
+    !   Pick wall panel by color -> place on base panel on conveyor
+    !
+    !   stack_cnt -> color & place height:
+    !     1     -> White  | Zplace = 1*ToP = 2 mm
+    !     2, 3  -> Blue   | Zplace = 2*ToP, 3*ToP
+    !     4     -> Brown  | Zplace = 4*ToP = 8 mm
+    !
+    !   Pick  : Offs(pXXXbox, 0,0, (count-1)*ToP)
+    !   Place : Offs(pCon,    0,0, stack_cnt*ToP)
+    !   stack_cnt increments 1->2->3->4->1 (resets after 4th wall)
+    ! ================================================================
+    
+    PROC temp_wall_to_con()
+        VAR num Zpick;
+        VAR num Zplace;
+        Zplace := stack_cnt * ToP;
+
+        MoveJ pSafe2, v200, z50, tool1;
+
+
+        Zpick := (WpC1 - 1) * ToP;
+        MoveJ Offs(pWallbox1, 0, 0, StandW + AppClear), v200, z50, tool1;
+        MoveL Offs(pWallbox1, 0, 0, Zpick), v50, fine, tool1;
+        absorber_on;
+        MoveL Offs(pWallbox1, 0, 0, StandW + AppClear), v50, z50, tool1;
+        WpC1 := WpC1 - 1;
+        MoveJ Offs(pCon_Wall1, 0, 0, AppClear), v200, z50, tool1;
+        MoveL Offs(pCon_Wall1, 0, 0, Zplace), v50, fine, tool1;
+        absorber_off;
+        MoveL Offs(pCon_Wall1, 0, 0, Zplace + AppClear), v200, z50, tool1;
+        MoveJ pSafe1, v200, z50, tool1;
+        stack_cnt := stack_cnt + 1;
+    ENDPROC
+    
+    PROC wall_to_con()
+        VAR num Zpick;
+        VAR num Zplace;
+        Zplace := stack_cnt * ToP;
+
+        MoveJ pSafe2, v200, z50, tool1;
+
+        IF stack_cnt = 1 THEN
+            ! Wallbox1
+            Zpick := (WpC1 - 1) * ToP;
+            MoveJ Offs(pWallbox1, 0, 0, StandW + AppClear), v200, z50, tool1;
+            MoveL Offs(pWallbox1, 0, 0, Zpick), v50, fine, tool1;
+            absorber_on;
+            MoveL Offs(pWallbox1, 0, 0, StandW + AppClear), v50, z50, tool1;
+            WpC1 := WpC1 - 1;
+            ! -- Place on conveyor --
+            MoveJ Offs(pCon_Wall1, 0, 0, AppClear), v200, z50, tool1;
+            MoveL Offs(pCon_Wall1, 0, 0, Zplace), v50, fine, tool1;
+            absorber_off;
+            MoveL Offs(pCon_Wall1, 0, 0, Zplace + AppClear), v200, z50, tool1;
+            MoveJ pSafe2, v200, z50, tool1;
+
+        ELSEIF stack_cnt = 2 OR stack_cnt = 3 THEN
+            ! Wallbox2
+            Zpick := (WpC2 - 1) * ToP;
+            MoveJ Offs(pWallbox2, 0, 0, StandW + AppClear), v200, z50, tool1;
+            MoveL Offs(pWallbox2, 0, 0, Zpick), v50, fine, tool1;
+            absorber_on;
+            MoveL Offs(pWallbox2, 0, 0, StandW + AppClear), v50, z50, tool1;
+            WpC2 := WpC2 - 1;
+            ! -- Place on conveyor --
+            MoveJ Offs(pCon_Wall2, 0, 0, AppClear), v200, z50, tool1;
+            MoveL Offs(pCon_Wall2, 0, 0, Zplace), v50, fine, tool1;
+            absorber_off;
+            MoveL Offs(pCon_Wall2, 0, 0, Zplace + AppClear), v200, z50, tool1;
+            MoveJ pSafe2, v200, z50, tool1;
+
+        ELSEIF stack_cnt = 4 THEN
+            ! Wallbox3
+            Zpick := (WpC3 - 1) * ToP;
+            MoveJ Offs(pWallbox3, 0, 0, StandW + AppClear), v200, z50, tool1;
+            MoveL Offs(pWallbox3, 0, 0, Zpick), v50, fine, tool1;
+            absorber_on;
+            MoveL Offs(pWallbox3, 0, 0, StandW + AppClear), v50, z50, tool1;
+            WpC3 := WpC3 - 1;
+            ! -- Place on conveyor --
+            MoveJ Offs(pCon_Wall3, 0, 0, AppClear), v200, z50, tool1;
+            MoveL Offs(pCon_Wall3, 0, 0, Zplace), v50, fine, tool1;
+            absorber_off;
+            MoveL Offs(pCon_Wall3, 0, 0, Zplace + AppClear), v200, z50, tool1;
+            MoveJ pSafe1, v200, z50, tool1;
+        ENDIF
+
+        
+
+        ! -- Update stack counter --
+        IF stack_cnt = 4 THEN
+            stack_cnt := 1;
+        ELSE
+            stack_cnt := stack_cnt + 1;
+        ENDIF
+    ENDPROC
+
+    ! ================================================================
+    ! ceil_to_con
+    !   Pick ceiling panel from box -> place as lid on base panel
+    !
+    !   Pick  : Offs(pCeilbox, 0,0, (CpC-1)*HoC)
+    !   Place : Offs(pCon,     0,0, HoC)  -- fixed offset, independent
+    !           of wall stack height (ceiling rests on base panel rim)
+    ! ================================================================
+    PROC ceil_to_con()
+        VAR num Zpick;
+        Zpick := (CpC - 1) * HoC;
+
+        ! -- Pick --
+        MoveJ pSafe1, v200, z50, tool1;
+        MoveJ Offs(pCeilbox, 0, 0, StandC + AppClear), v200, z50, tool1;
+        MoveL Offs(pCeilbox, 0, 0, Zpick), v50, fine, tool1;
+        absorber_on;
+        MoveL Offs(pCeilbox, 0, 0, StandC + AppClear), v50, z50, tool1;
+
+        ! -- Place (lid onto base panel rim) --
+        MoveJ Offs(pCon_Ceil, 0, 0, AppClear), v200, z50, tool1;
+        MoveL Offs(pCon_Ceil, 0, 0, 0), v50, fine, tool1;
+        absorber_off;
+        MoveL Offs(pCon_Ceil, 0, 0, AppClear), v200, z50, tool1;
+        MoveJ pSafe1, v200, z50, tool1;
+
+        CpC := CpC - 1;
+    ENDPROC
+
+ENDMODULE

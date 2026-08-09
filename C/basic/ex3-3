@@ -1,0 +1,32 @@
+#define _CRT_SECURE_NO_WARNINGS 
+#include <stdio.h>
+int main()
+{
+	short sh = 32767;
+	unsigned short sh2 = 32768;
+	int in = 2147483647;
+	long ln = 2147483647;
+	long long lln = 123451234512345;
+	printf("short형 변수출력:%d\n", sh);
+	printf("int형 변수출력:%d\n", in);
+	printf("long형 변수출력:%d\n", ln);
+	printf("unsigned short형 변수출력:%d\n", sh2);
+	printf("long long형 변수출력:%lld\n\n", lln);
+
+
+	unsigned int a;
+	a = 4294967293;
+	printf("%d\n", a);
+	a = -1;
+	printf("%u\n\n", a);
+
+
+	float ft = 1.234567890123456789;
+	double db = 1.234567890123456789;
+	long double ldb = 1.234567890123456789;
+	printf("float형 변수출력:%.20f\n\n", ft);
+	printf("double형 변수출력:%.20lf\n", db);
+	printf("long double형 변수출력:%.20Lf", ldb);
+
+	return 0;
+}

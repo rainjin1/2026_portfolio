@@ -1,0 +1,28 @@
+#include <stdio.h>
+#include <stdlib.h>
+
+//heap 20byte int 공간을 만들어서 쓰자. 4byte짜리 int 공간 5개를 만들자!
+int main()
+{
+    int *pi;
+    int sum = 0;
+    //공간만들기
+    pi = (int *)malloc(5 * sizeof(int));
+    //예외처리
+    if (pi ==NULL)
+    {
+        printf("메모리부족\n");
+        exit(1); //프로그램종료 강제로 종료해버림. stdlib에 들어있음.
+    }
+    for (int i = 0; i < 5; i++) //5명의 나이를 입력받고 평균나이구하기
+    {
+        scanf("%d", pi+i); //&pi[i]와 같은 표현임.
+        sum += pi[i];
+        /* code */
+    }
+    printf("평균나이 : %.1lf\n", sum/5.0);
+
+
+    free(pi);
+    return 0;
+}

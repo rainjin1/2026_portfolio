@@ -1,0 +1,420 @@
+#!/usr/bin/env python3
+import rclpy
+from rclpy.node import Node
+from geometry_msgs.msg import Twist
+from sensor_msgs.msg import LaserScan
+from nav_msgs.msg import Odometry
+import tf2_ros
+import math
+import sys
+
+
+class RightHandWallFollowerFSM(Node):
+    def __init__(self):
+        super().__init__('right_hand_wall_follower_fsm')
+
+        self.cmd_vel_pub = self.create_publisher(Twist, 'cmd_vel', 10)
+
+        lidar_qos = rclpy.qos.QoSProfile(
+            reliability=rclpy.qos.ReliabilityPolicy.BEST_EFFORT,
+            history=rclpy.qos.HistoryPolicy.KEEP_LAST,
+            depth=5
+        )
+        self.scan_sub = self.create_subscription(
+            LaserScan, '/scan', self.scan_callback, lidar_qos)
+        self.odom_sub = self.create_subscription(
+            Odometry, '/odom', self.odom_callback, 10)
+
+        self.timer = self.create_timer(0.1, self.control_loop)
+        self.scan_msg = None
+
+        # [Fix 1] TF2 보정 — 30초마다 map->base_link 로 current_x/y 갱신
+        self.tf_buffer   = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+        self.tf_correction_counter  = 0
+        self.TF_CORRECTION_INTERVAL = 300   # 300틱 x 0.1s = 30초
+
+        # 오도메트리 위치 및 각도 연산용 변수
+        self.current_x   = 0.0
+        self.current_y   = 0.0
+        self.current_yaw = 0.0
+        self.prev_yaw    = None
+        self.total_right_turn_accum = 0.0
+
+        # 원점 자동 복귀 종료용 변수
+        self.start_x             = None
+        self.start_y             = None
+        self.has_left_start_zone = False
+        self.global_run_timer    = 0
+
+        # 미세 비상회피 노이즈 필터링용
+        self.emergency_start_yaw = 0.0
+
+        # [Fix 2] CORNER_ESCAPE 페이즈 (ROTATING / DRIVING)
+        self.corner_escape_phase = "ROTATING"
+
+        # FSM 상태
+        self.state       = "WALL_FOLLOW"
+        self.state_timer = 0
+
+        # 파라미터
+        self.EMERGENCY_MIN     = 0.05
+        self.EMERGENCY_MAX     = 0.20
+        self.EMERGENCY_RELEASE = 0.35
+        self.WALL_MIN_DIST     = 0.13
+        self.WALL_MAX_DIST     = 0.22
+        self.WALL_TARGET_DIST  = 0.17
+        self.OPEN_SPACE_DIST   = 0.35
+        self.MAX_LINEAR        = 0.08
+        self.MAX_ANGULAR       = 0.40
+
+        self.get_logger().info(
+            "통합 노드 시작 - TF2 30초 위치 보정 + CORNER_ESCAPE 탑재"
+        )
+
+    # =========================================================================
+    # Layer 1 - 데이터 수집 콜백
+    # =========================================================================
+
+    def odom_callback(self, msg):
+        self.current_x = msg.pose.pose.position.x
+        self.current_y = msg.pose.pose.position.y
+
+        if self.start_x is None and self.start_y is None:
+            self.start_x = self.current_x
+            self.start_y = self.current_y
+            self.get_logger().info(
+                f"시작 원점 설정: X={self.start_x:.3f}, Y={self.start_y:.3f}"
+            )
+
+        q = msg.pose.pose.orientation
+        siny_cosp = 2 * (q.w * q.z + q.x * q.y)
+        cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z)
+        self.current_yaw = math.atan2(siny_cosp, cosy_cosp)
+
+        if self.prev_yaw is not None:
+            delta_yaw = self.current_yaw - self.prev_yaw
+            if delta_yaw >  math.pi: delta_yaw -= 2 * math.pi
+            if delta_yaw < -math.pi: delta_yaw += 2 * math.pi
+
+            if self.state != "EMERGENCY":
+                if delta_yaw < 0:
+                    self.total_right_turn_accum += abs(delta_yaw)
+                else:
+                    self.total_right_turn_accum = max(
+                        0.0, self.total_right_turn_accum - delta_yaw * 0.1
+                    )
+        self.prev_yaw = self.current_yaw
+
+    def scan_callback(self, msg):
+        self.scan_msg = msg
+
+    # =========================================================================
+    # Layer 2 - TF2 위치 보정 (Fix 1)
+    # =========================================================================
+
+    def _try_tf2_correction(self):
+        """30초마다 호출. SLAM 보정 좌표로 current_x/y 갱신. 실패시 odom 유지."""
+        try:
+            tf = self.tf_buffer.lookup_transform(
+                'map', 'base_link',
+                rclpy.time.Time(),
+                timeout=rclpy.duration.Duration(seconds=0.3)
+            )
+            corrected_x = tf.transform.translation.x
+            corrected_y = tf.transform.translation.y
+            drift = math.sqrt(
+                (corrected_x - self.current_x) ** 2 +
+                (corrected_y - self.current_y) ** 2
+            )
+            self.current_x = corrected_x
+            self.current_y = corrected_y
+            self.get_logger().info(
+                f"[TF2 보정] 오도 오차: {drift:.3f}m | "
+                f"보정 위치: ({corrected_x:.3f}, {corrected_y:.3f})"
+            )
+        except Exception as e:
+            self.get_logger().warn(f"[TF2 보정 실패] 오도메트리 유지: {e}")
+
+    # =========================================================================
+    # Layer 2 - 각도 -> 인덱스 변환
+    # =========================================================================
+
+    def angle_to_index(self, angle_deg):
+        """angle_min=0(CCW) 및 angle_min=-pi 기종 모두 대응."""
+        if not self.scan_msg:
+            return 0
+        angle_rad = math.radians(angle_deg)
+        idx = int(
+            (angle_rad - self.scan_msg.angle_min) / self.scan_msg.angle_increment
+        )
+        return max(0, min(idx, len(self.scan_msg.ranges) - 1))
+
+    # =========================================================================
+    # 메인 제어 루프
+    # =========================================================================
+
+    def control_loop(self):
+        if not self.scan_msg or self.start_x is None:
+            return
+
+        self.global_run_timer      += 1
+        self.tf_correction_counter += 1
+
+        # Layer 2: 30초마다 TF2 위치 보정
+        if self.tf_correction_counter >= self.TF_CORRECTION_INTERVAL:
+            self.tf_correction_counter = 0
+            self._try_tf2_correction()
+
+        twist = Twist()
+
+        # =====================================================================
+        # Layer 3: 미션 관리 - 원점 복귀 판정 (FSM보다 우선)
+        # =====================================================================
+        dist_from_start = math.sqrt(
+            (self.current_x - self.start_x) ** 2 +
+            (self.current_y - self.start_y) ** 2
+        )
+
+        if not self.has_left_start_zone:
+            if dist_from_start > 0.50:
+                self.has_left_start_zone = True
+                self.get_logger().warn("출발 구역 이탈. 원점 복귀 레이더 가동.")
+
+        if self.has_left_start_zone and dist_from_start <= 0.25:
+            self.get_logger().error(
+                f"[미션 완수] 원점 복귀 확인 (거리: {dist_from_start:.2f}m)"
+            )
+            stop_twist = Twist()
+            self.cmd_vel_pub.publish(stop_twist)
+            self.destroy_node()
+            rclpy.shutdown()
+            sys.exit(0)
+
+        # =====================================================================
+        # Layer 2: LiDAR 거리 가공
+        # =====================================================================
+
+        # 전방 (315~360 + 0~15도)
+        front_dist = float('inf')
+        idx_315 = self.angle_to_index(315)
+        idx_15  = self.angle_to_index(15)
+        for i in range(idx_315, len(self.scan_msg.ranges)):
+            r = self.scan_msg.ranges[i]
+            if self.EMERGENCY_MIN < r < 3.5 and not math.isnan(r):
+                if r < front_dist: front_dist = r
+        for i in range(0, idx_15 + 1):
+            r = self.scan_msg.ranges[i]
+            if self.EMERGENCY_MIN < r < 3.5 and not math.isnan(r):
+                if r < front_dist: front_dist = r
+
+        # 우전방 (300~330도)
+        idx_300 = self.angle_to_index(300)
+        idx_330 = self.angle_to_index(330)
+        rf_ranges = [
+            self.scan_msg.ranges[i] for i in range(idx_300, idx_330 + 1)
+            if self.EMERGENCY_MIN < self.scan_msg.ranges[i] < 3.5
+            and not math.isnan(self.scan_msg.ranges[i])
+        ]
+        right_front_dist = min(rf_ranges) if rf_ranges else float('inf')
+
+        # 정우측 (240~270도)
+        idx_240 = self.angle_to_index(240)
+        idx_270 = self.angle_to_index(270)
+        rs_ranges = [
+            self.scan_msg.ranges[i] for i in range(idx_240, idx_270 + 1)
+            if self.EMERGENCY_MIN < self.scan_msg.ranges[i] < 3.5
+            and not math.isnan(self.scan_msg.ranges[i])
+        ]
+        right_side_dist = min(rs_ranges) if rs_ranges else float('inf')
+
+        # 후방 (180도) - Fix 2 CORNER_ESCAPE 좌회전 종료 기준
+        idx_180 = self.angle_to_index(180)
+        rear_raw  = self.scan_msg.ranges[idx_180]
+        rear_dist = (
+            rear_raw
+            if self.EMERGENCY_MIN < rear_raw < 3.5 and not math.isnan(rear_raw)
+            else float('inf')
+        )
+
+        accum_deg = math.degrees(self.total_right_turn_accum)
+        self.get_logger().info(
+            f"[{self.state}] "
+            f"F:{front_dist:.2f} | RF:{right_front_dist:.2f} | "
+            f"RS:{right_side_dist:.2f} | REAR:{rear_dist:.2f} | "
+            f"Accum:{accum_deg:.1f}deg | Dist:{dist_from_start:.2f}m",
+            throttle_duration_sec=1.0
+        )
+
+        # =====================================================================
+        # Layer 4: 안전 오버라이드 - EMERGENCY (FSM 전체 우선순위 최상위)
+        # =====================================================================
+        if front_dist < self.EMERGENCY_MAX and self.state != "EMERGENCY":
+            self.emergency_start_yaw = self.current_yaw
+            self.state       = "EMERGENCY"
+            self.state_timer = 0
+            self.get_logger().warn("[EMERGENCY] 전방 20cm 이내 진입!")
+
+        # =====================================================================
+        # Layer 5: FSM 상태머신
+        # =====================================================================
+
+        # STATE 1: WALL_FOLLOW - 기본 우측 벽 추적 (P제어)
+        if self.state == "WALL_FOLLOW":
+            twist.linear.x = self.MAX_LINEAR
+            error = right_side_dist - self.WALL_TARGET_DIST
+
+            if right_side_dist < self.WALL_MIN_DIST:
+                twist.angular.z = self.MAX_ANGULAR * 0.6
+            elif self.WALL_MAX_DIST < right_side_dist <= self.OPEN_SPACE_DIST:
+                twist.angular.z = -self.MAX_ANGULAR * 0.6
+            else:
+                twist.angular.z = error * 1.5
+
+            # 전이 체크 (우선순위 순서)
+            if self.total_right_turn_accum >= math.radians(370):
+                self.state       = "ISLAND_ESCAPE"
+                self.state_timer = 0
+                self.total_right_turn_accum = 0.0
+                self.get_logger().error("[무한루프 감지] 섬 이탈 모드 시동")
+
+            elif right_front_dist > self.OPEN_SPACE_DIST:
+                self.state       = "EXIT_TURN"
+                self.state_timer = 0
+                self.get_logger().info("[전이] 우전방 탈출구 -> EXIT_TURN")
+
+            elif right_side_dist > self.OPEN_SPACE_DIST:
+                self.state       = "CORNER_TURN"
+                self.state_timer = 0
+                self.get_logger().info("[전이] 우측 코너 -> CORNER_TURN")
+
+        # STATE 2: EXIT_TURN - 우전방 탈출구 진입 회전
+        elif self.state == "EXIT_TURN":
+            twist.linear.x  = self.MAX_LINEAR * 0.8
+            twist.angular.z = -self.MAX_ANGULAR * 0.7
+
+            self.state_timer += 1
+            if self.state_timer >= 15:
+                if right_side_dist <= self.OPEN_SPACE_DIST or self.state_timer >= 30:
+                    self.state       = "WALL_FOLLOW"
+                    self.state_timer = 0
+                    self.get_logger().info("[완수] EXIT_TURN -> WALL_FOLLOW")
+
+        # STATE 3: CORNER_TURN - 바깥 코너 회전
+        elif self.state == "CORNER_TURN":
+            twist.linear.x  = self.MAX_LINEAR * 0.7
+            twist.angular.z = -self.MAX_ANGULAR * 0.6
+
+            self.state_timer += 1
+            if self.state_timer >= 10 and right_side_dist <= self.OPEN_SPACE_DIST:
+                self.state       = "WALL_FOLLOW"
+                self.state_timer = 0
+                self.get_logger().info("[완수] CORNER_TURN -> WALL_FOLLOW")
+
+            elif self.state_timer >= 30:
+                # Fix 2: 3초 타임아웃 -> CORNER_ESCAPE 기동
+                self.state               = "CORNER_ESCAPE"
+                self.state_timer         = 0
+                self.corner_escape_phase = "ROTATING"
+                self.get_logger().warn("[타임아웃] CORNER_TURN -> CORNER_ESCAPE")
+
+        # STATE 4 (Fix 2): CORNER_ESCAPE - 우측 벽을 등뒤로 보낸 후 직진
+        # Phase ROTATING : 후방(180도)에 벽이 감지될 때까지 좌회전 (우측 270도 -> 후방 180도)
+        # Phase DRIVING  : 후방 벽 확인 후 직진으로 벽에서 멀어짐
+        elif self.state == "CORNER_ESCAPE":
+
+            if self.corner_escape_phase == "ROTATING":
+                twist.linear.x  = 0.0
+                twist.angular.z = self.MAX_ANGULAR * 0.6
+
+                self.state_timer += 1
+
+                if rear_dist <= self.OPEN_SPACE_DIST:
+                    self.corner_escape_phase = "DRIVING"
+                    self.state_timer         = 0
+                    self.get_logger().info(
+                        f"[CORNER_ESCAPE] 후방 벽 감지({rear_dist:.2f}m) -> 직진 전환"
+                    )
+                elif self.state_timer >= 60:
+                    self.corner_escape_phase = "DRIVING"
+                    self.state_timer         = 0
+                    self.get_logger().warn("[CORNER_ESCAPE] 회전 타임아웃 -> 직진 강행")
+
+            elif self.corner_escape_phase == "DRIVING":
+                twist.linear.x  = self.MAX_LINEAR
+                twist.angular.z = 0.0
+
+                self.state_timer += 1
+                if self.state_timer >= 20 or right_side_dist <= self.OPEN_SPACE_DIST:
+                    self.state       = "WALL_FOLLOW"
+                    self.state_timer = 0
+                    self.get_logger().info("[완수] CORNER_ESCAPE -> WALL_FOLLOW")
+
+        # STATE 5: ISLAND_ESCAPE - 외딴섬 탈출 (좌회전 전진)
+        elif self.state == "ISLAND_ESCAPE":
+            twist.linear.x  = self.MAX_LINEAR
+            twist.angular.z = self.MAX_ANGULAR * 0.25
+
+            self.state_timer += 1
+            if self.state_timer >= 15 and right_side_dist <= self.OPEN_SPACE_DIST:
+                self.state       = "WALL_FOLLOW"
+                self.state_timer = 0
+                self.total_right_turn_accum = 0.0
+                self.get_logger().info("[탈출 성공] 외곽 벽 발견 -> WALL_FOLLOW")
+
+            elif self.state_timer >= 45:
+                self.state       = "WALL_FOLLOW"
+                self.state_timer = 0
+                self.total_right_turn_accum = 0.0
+                self.get_logger().info("[타임아웃] ISLAND_ESCAPE -> WALL_FOLLOW")
+
+        # STATE 6: EMERGENCY - 전방 충돌 회피 (제자리 좌회전)
+        elif self.state == "EMERGENCY":
+            twist.linear.x  = 0.0
+            twist.angular.z = self.MAX_ANGULAR * 0.8
+
+            self.state_timer += 1
+            if front_dist > self.EMERGENCY_RELEASE and self.state_timer >= 5:
+                escape_diff = self.current_yaw - self.emergency_start_yaw
+                if escape_diff >  math.pi: escape_diff -= 2 * math.pi
+                if escape_diff < -math.pi: escape_diff += 2 * math.pi
+
+                actual_escape_deg = abs(math.degrees(escape_diff))
+                self.state       = "WALL_FOLLOW"
+                self.state_timer = 0
+
+                if actual_escape_deg >= 30.0:
+                    self.total_right_turn_accum = 0.0
+                    self.get_logger().info(
+                        f"[대형 회피] {actual_escape_deg:.1f}도 -> 누적 리셋 후 복귀"
+                    )
+                else:
+                    self.get_logger().info(
+                        f"[미세 스침] {actual_escape_deg:.1f}도 -> 누적 보존 유지"
+                    )
+
+        # =====================================================================
+        # Layer 6: 명령 출력
+        # =====================================================================
+        self.cmd_vel_pub.publish(twist)
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = RightHandWallFollowerFSM()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        try:
+            stop = Twist()
+            node.cmd_vel_pub.publish(stop)
+            node.destroy_node()
+            rclpy.shutdown()
+        except Exception:
+            pass  # 제어 루프 내 자동 종료 시 중복 파괴 에러 무시
+
+
+if __name__ == '__main__':
+    main()

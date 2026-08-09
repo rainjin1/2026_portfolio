@@ -1,0 +1,21 @@
+#include <stdio.h>
+
+int main()
+{
+    FILE  *fp;
+    char buffer[100];
+    fp = fopen("a.txt", "r");
+    if (fp == NULL)
+    {
+        printf("파일이 열리지 않았습니다.\n");
+        return 1;
+    }
+    printf("파일이 열렸습니다.\n");
+    while (fgets(buffer, sizeof(buffer), fp) != NULL)
+    {
+        printf("%s\n", buffer);
+    }
+
+    fclose(fp);
+    return 0;
+}
